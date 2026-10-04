@@ -1,0 +1,21 @@
+/dts-v1/;
+
+/ {
+    compatible = "pine64,pinebook-pro-rk3399", "rockchip,rk3399";
+    model = "PineBook Pro (RK3399) eMMC boot target";
+
+    chosen {
+        bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/mmcblk1p3 rw rootwait";
+    };
+
+    memory@0 {
+        device_type = "memory";
+        reg = <0x0 0x0 0x0 0x80000000>;
+    };
+};
+
+&sdhci {
+    status = "okay";
+    bus-width = <8>;
+    non-removable;
+};

@@ -1,0 +1,15 @@
+/dts-v1/;
+
+/ {
+    compatible = "pine64,pinebook-pro-rk3399", "rockchip,rk3399";
+    model = "PineBook Pro (RK3399) microSD boot target";
+
+    chosen {
+        bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/mmcblk0p3 rw rootwait";
+    };
+};
+
+&sdmmc {
+    status = "okay";
+    disable-wp;
+};

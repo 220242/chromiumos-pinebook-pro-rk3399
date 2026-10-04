@@ -1,0 +1,18 @@
+/dts-v1/;
+
+/ {
+    compatible = "pine64,pinebook-pro-rk3399", "rockchip,rk3399";
+    model = "PineBook Pro (RK3399) NVMe boot target";
+
+    chosen {
+        bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/nvme0n1p3 rw rootwait";
+    };
+};
+
+&pcie0 {
+    status = "okay";
+};
+
+&pcie1 {
+    status = "okay";
+};
