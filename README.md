@@ -203,9 +203,6 @@ This is a basic scaffold for early-stage porting work. The repository does not y
 
 See `docs/BUILDING.md` and `docs/STORAGE.md` for an initial development workflow and environment setup.
 
-## Important note
-
-ChromiumOS porting for an ARM board like PineBook Pro is a substantial effort. This repository is meant to organize the work and keep a clean project structure while you explore the required upstream and vendor changes.
 
 ## License
 
