@@ -204,6 +204,3 @@ This is a basic scaffold for early-stage porting work. The repository does not y
 See `docs/BUILDING.md` and `docs/STORAGE.md` for an initial development workflow and environment setup.
 
 
-## License
-
-This repository is provided as a development scaffold for experimentation and porting work. It does not include upstream ChromiumOS source or vendor binaries.
