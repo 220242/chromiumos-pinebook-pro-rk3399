@@ -1,0 +1,15 @@
+# Pinebook Pro: Rockchip RK3399 (2x Cortex-A72 + 4x Cortex-A53), 4 GB LPDDR4,
+# 64-bit (arm64) userland.
+
+BOARD_COMPILER_FLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a53"
+
+# ChromeOS kernel 6.6 with device tree support. The splitconfig is the RK3399
+# Chromebook (gru) flavour; profile.bashrc merges kernel/pinebook-pro.config on
+# top of it. If this kernel branch has no rockchip64 flavour, use
+# chromiumos-arm64-generic instead.
+CHROMEOS_KERNEL_ARCH="arm64"
+CHROMEOS_KERNEL_SPLITCONFIG="chromiumos-rockchip64"
+USE="${USE} kernel-6_6 device_tree"
+
+# Mali-T860 through the open Panfrost driver.
+VIDEO_CARDS="panfrost"
