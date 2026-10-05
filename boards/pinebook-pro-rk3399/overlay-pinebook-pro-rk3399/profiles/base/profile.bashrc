@@ -12,7 +12,13 @@ _pinebook_pro_is_kernel() {
 }
 
 # The kernel is built out of tree; find the directory holding its .config.
+# cros-kernel builds incrementally under ${SYSROOT}/var/cache/portage, not in
+# ${WORKDIR}, so ask the eclass first.
 _pinebook_pro_kernel_build_dir() {
+	if declare -F cros-workon_get_build_dir >/dev/null; then
+		cros-workon_get_build_dir
+		return
+	fi
 	local cfg
 	cfg=$(find "${WORKDIR}" -maxdepth 4 -name .config -path '*build*' \
 		-not -path "${S}/*" -print -quit)

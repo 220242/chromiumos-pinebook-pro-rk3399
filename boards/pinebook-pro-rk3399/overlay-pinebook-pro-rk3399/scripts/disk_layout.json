@@ -1,11 +1,48 @@
 {
-  "_comment": "Pinebook Pro: grow RWFW (partition 11) to 16 MiB. The Rockchip boot ROM loads the boot loader from sector 64, and u-boot-rockchip.bin is about 9 MiB, so it has to sit inside a partition nothing else uses. RWFW comes first in the common ChromiumOS layout and holds no data on this board. install-u-boot.sh checks the actual image before writing and refuses if any other partition overlaps.",
-  "parent": "common_disk_layout.json",
+  "_comment": "Pinebook Pro: arm64-generic's layout plus a 16 MiB RWFW (partition 11). The Rockchip boot ROM loads the boot loader from sector 64, and u-boot-rockchip.bin is about 9 MiB, so it has to sit inside a partition nothing else uses. RWFW is the first partition in legacy_disk_layout.json and holds no data on this board. install-u-boot.sh checks the actual image before writing and refuses if any other partition overlaps.",
+  "parent": "legacy_disk_layout.json",
   "layouts": {
     "common": [
       {
         "num": 11,
         "size": "16 MiB"
+      },
+      {
+        "num": 2,
+        "size": "64 MiB"
+      },
+      {
+        "num": 4,
+        "size": "64 MiB"
+      },
+      {
+        "num": 12,
+        "size": "128 MiB"
+      }
+    ],
+    "usb": [
+      {
+        "num": 1,
+        "size": "8 GiB"
+      }
+    ],
+    "usb-updatable": [
+      {
+        "num": 1,
+        "size": "8 GiB"
+      }
+    ],
+    "factory_install": [
+      {
+        "num": 3,
+        "size": "560 MiB",
+        "fs_size": "552 MiB"
+      }
+    ],
+    "4gb-rootfs": [
+      {
+        "num": 1,
+        "size": "3072 MiB"
       }
     ]
   }
