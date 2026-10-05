@@ -39,10 +39,10 @@ cat /proc/partitions            # partition table
 dmesg | grep -iE 'mmc|sd|nvme'  # storage subsystem messages
 
 # For eMMC:
-ls -la /dev/mmcblk1*            # should exist if eMMC is present
+ls -la /dev/mmcblk2*            # should exist if eMMC is present
 
 # For microSD:
-ls -la /dev/mmcblk0*            # should exist when SD card is inserted
+ls -la /dev/mmcblk1*            # should exist when SD card is inserted
 
 # For NVMe (if adapter plugged):
 ls -la /dev/nvme*               # should exist if NVMe enumeration works
@@ -54,12 +54,12 @@ Record in your project notes:
 
 - Board PCB revision (check silkscreen)
 - CPU package marking (A72/A53 cluster information)
-- Memory type (DDR4 or LPDDR4)
+- Memory (4GB LPDDR4 on every unit)
 - eMMC capacity and speed class
-- Wireless chipset (likely RTL8723BS)
+- Wireless module (AMPAK AP6256: Broadcom BCM43456 Wi-Fi + BCM4345C5 Bluetooth)
 - Display panel model (if identifiable)
 
-**Example**: `PineBook Pro v1.2 | RK3399 | 4GB DDR4 | 128GB eMMC | RTL8723BS | 14" IPS panel`
+**Example**: `PineBook Pro | RK3399 | 4GB LPDDR4 | 64GB eMMC | AP6256 | 14" 1080p IPS panel`
 
 ## Step 2: Set up ChromiumOS build environment
 
@@ -274,20 +274,20 @@ cp ~/rkbin/bin/rk33/rk3399_miniloader_v1.26.bin \
   ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/
 ```
 
-### 6.2 Wireless firmware (Realtek RTL8723BS)
+### 6.2 Wireless firmware (AMPAK AP6256, Broadcom)
 
 ```bash
-# Get Realtek firmware from official or community source
-git clone https://github.com/morrissimo/rtl8723bs.git ~/rtl8723bs_src
-
-# Firmware files (usually in firmware/ or similar)
-cp ~/rtl8723bs_src/firmware/*.bin \
-  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/
+# Broadcom Wi-Fi firmware from linux-firmware
+git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git ~/linux-firmware
+mkdir -p ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/brcm
+cp ~/linux-firmware/brcm/brcmfmac43456-sdio.* \
+  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/brcm/
 ```
 
-Expect at minimum:
-- `rtl8723b_fw.bin` (Bluetooth firmware)
-- `rtl8723bs_nic.bin` (Wi-Fi NIC firmware)
+Expect at minimum, under `/lib/firmware/brcm/`:
+- `brcmfmac43456-sdio.bin` and `brcmfmac43456-sdio.clm_blob` (Wi-Fi firmware, linux-firmware)
+- `brcmfmac43456-sdio.pine64,pinebook-pro.txt` (board NVRAM; take it from Manjaro or Armbian firmware if your linux-firmware lacks it)
+- `BCM4345C5.hcd` (Bluetooth patch RAM, from Manjaro or Armbian firmware)
 
 ## Step 7: Build Linux baseline (pre-ChromiumOS)
 
@@ -371,7 +371,7 @@ Loading device tree...
 Linux kernel boot message...
 Rockchip platform init...
 eMMC/SD controller init...
-Storage devices detected: /dev/mmcblk1 (eMMC)
+Storage devices detected: /dev/mmcblk2 (eMMC)
 Keyboard and touchpad input...
 [OK] System booted successfully
 ```
@@ -417,7 +417,7 @@ cros flash --board=pinebook-pro-rk3399 "${TARGET_DEVICE}" "${IMAGE_PATH}/recover
 ### 10.1 eMMC build
 
 ```bash
-# Primary target - use the default configuration
+# Internal install target (microSD in 10.2 is the primary bring-up target)
 build_image --board=pinebook-pro-rk3399 --image_types=dev,recovery
 ```
 
@@ -455,11 +455,11 @@ vim ~/trunk/src/third_party/kernel/arch/arm64/boot/dts/rockchip/pinebook-pro-rk3
 
 ### 11.2 Audio codec configuration
 
-Enable ES8323 audio codec in kernel and device tree.
+Enable the ES8316 audio codec (`CONFIG_SND_SOC_ES8316`, `simple-audio-card` on I2S1). The upstream device tree already describes it.
 
 ### 11.3 Wi-Fi/Bluetooth setup
 
-Load firmware and configure RTL8723BS drivers in kernel and rootfs.
+Enable `brcmfmac` (Wi-Fi on SDIO) and `hci_uart` with `hci_bcm` (Bluetooth on UART0) in the kernel, and install the AP6256 firmware from 6.2 in the rootfs.
 
 ## Step 12: Final validation checklist
 

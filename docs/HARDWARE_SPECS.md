@@ -12,9 +12,9 @@ This document provides the hardware baseline for the ChromiumOS port and capture
 - **Cache**: L1 32KB/32KB (I/D per core), L2 1MB shared per cluster
 
 ### Memory
-- **RAM**: DDR4 4GB (some models may have 8GB)
-- **DDR frequency**: typically 800-1066 MHz depending on revision
+- **RAM**: 4GB LPDDR4 (every PineBook Pro ships with 4GB; there is no 8GB model)
 - **Memory controller**: integrated in RK3399
+- **Address map**: DRAM at `0x0`; RK3399 reserves the top 128MB of the 4GB window for MMIO, so about 3.875GB (`0x0`-`0xf8000000`) is usable
 
 ### GPU
 - **GPU type**: Mali-T860 MP4 (quad-core)
@@ -25,27 +25,24 @@ This document provides the hardware baseline for the ChromiumOS port and capture
 ### Storage controllers
 
 #### eMMC (internal)
-- **Controller**: Rockchip SDHCI host integrated in RK3399
-- **Protocol**: eMMC 5.1 or later
-- **Capacity**: typically 64GB or 128GB (varies by revision)
-- **Speed**: HS200 or HS400 mode
-- **Device file**: `/dev/mmcblk1` (when SD card is `mmcblk0`)
+- **Controller**: Arasan SDHCI (`&sdhci`, `mmc@fe330000`), driver `sdhci-of-arasan` (`CONFIG_MMC_SDHCI_OF_ARASAN`)
+- **Module**: removable eMMC module, 64GB standard (128GB modules exist)
+- **Speed**: HS200 (upstream device tree sets `mmc-hs200-1_8v`)
+- **Device file**: `/dev/mmcblk2` (upstream alias `mmc2`)
 - **Partitions**: typically boot + rootfs + stateful
 
 #### microSD card slot
-- **Controller**: Rockchip SDHCI host (separate from eMMC)
-- **Protocol**: SDIO / UHS-I or UHS-II
-- **Device file**: `/dev/mmcblk0` (primary SD slot)
-- **Speed**: depends on card class (UHS support for HS200 or better)
+- **Controller**: Synopsys DesignWare MMC (`&sdmmc`, `mmc@fe320000`), driver `dw_mmc-rockchip` (`CONFIG_MMC_DW_ROCKCHIP`)
+- **Protocol**: SD / UHS-I (upstream device tree enables SDR50)
+- **Device file**: `/dev/mmcblk1` (upstream alias `mmc1`; `mmc0` is the SDIO Wi-Fi bus)
 - **Supported capacities**: up to 1TB+ (SDXC compatible)
 
 #### NVMe (optional upgrade)
-- **Connection**: M.2 B-key slot or USB-C adapter
-- **Protocol**: NVMe 1.3+
-- **Controller path**: typically via USB 3.0 or direct PCIe
-- **Device file**: `/dev/nvme0n1` (when USB-based) or direct (when native slot is used)
-- **Speed**: PCIe 3.0 x4 theoretical maximum (~4GB/s)
-- **Note**: Requires compatible M.2 SSD or USB adapter
+- **Connection**: optional PINE64 M.2 adapter board (M-key NVMe SSD) on the internal PCIe connector
+- **Controller**: RK3399 has a single PCIe 2.1 controller (`&pcie0`, up to x4 lanes); there is no second controller
+- **Driver**: `pcie-rockchip-host` + `phy-rockchip-pcie` + `nvme`
+- **Device file**: `/dev/nvme0n1`
+- **Boot**: the RK3399 boot ROM cannot boot from PCIe, so U-Boot stays on SPI flash, eMMC or microSD and only the root filesystem lives on NVMe
 
 ### Input devices
 
@@ -79,10 +76,10 @@ This document provides the hardware baseline for the ChromiumOS port and capture
 ### Audio
 
 #### Codec
-- **Chipset**: typically Everest Semi ES8323 or similar
-- **Interface**: I2S (Integrated Interchip Sound) bus
+- **Chipset**: Everest Semi ES8316 (I2C address 0x11)
+- **Interface**: I2S1
 - **Features**: headphone jack, internal speaker, microphone support
-- **Driver**: `rockchip_es8323` or similar SoC Rockchip audio driver
+- **Driver**: `snd-soc-es8316` with `simple-audio-card` and `snd-soc-rockchip-i2s`
 
 #### DAC/amplifier
 - **Internal speaker**: usually powered by integrated amplifier
@@ -91,19 +88,19 @@ This document provides the hardware baseline for the ChromiumOS port and capture
 ### Wireless
 
 #### Wi-Fi
-- **Chipset**: Realtek RTL8723BS (typical for PineBook Pro)
-- **Standard**: IEEE 802.11 b/g/n (or newer variants)
-- **Interface**: SDIO (connected to secondary SD host)
-- **Firmware**: requires binary firmware blob (`rtl8723bs_nic.bin`)
-- **Driver**: `rtl8723bs` (Linux staging driver or vendor fork)
+- **Module**: AMPAK AP6256 (Broadcom BCM43456)
+- **Standard**: IEEE 802.11ac, 2.4/5GHz
+- **Interface**: SDIO (`&sdio0`)
+- **Firmware**: `brcm/brcmfmac43456-sdio.bin`, `.clm_blob` and board NVRAM `brcmfmac43456-sdio.pine64,pinebook-pro.txt`
+- **Driver**: `brcmfmac` (`CONFIG_BRCMFMAC`, `CONFIG_BRCMFMAC_SDIO`)
 - **Device naming**: `wlan0`
 
 #### Bluetooth
-- **Chipset**: RTL8723BS includes BT
-- **Standard**: Bluetooth 4.2 or 5.0 depending on firmware
-- **Interface**: UART or USB (varies by RTL version)
-- **Firmware**: `rtl8723b_fw.bin`
-- **Driver**: `rtl8723bs_bt` or kernel BT stack
+- **Chipset**: BCM4345C5, part of the AP6256 module
+- **Standard**: Bluetooth 5.0
+- **Interface**: UART0 with RTS/CTS (`brcm,bcm4345c5` node under `&uart0`)
+- **Firmware**: `brcm/BCM4345C5.hcd`
+- **Driver**: `hci_uart` with `hci_bcm` (`CONFIG_BT_HCIUART_BCM`, `CONFIG_SERIAL_DEV_BUS`)
 - **Device naming**: `hci0`
 
 ### Power management
@@ -132,33 +129,26 @@ This document provides the hardware baseline for the ChromiumOS port and capture
 
 ## Board revisions
 
-PineBook Pro has had multiple revisions. Key differences:
-
-| Revision | Memory | Storage | Notable changes |
-| --- | --- | --- | --- |
-| v1.0 | 4GB DDR4 | 64GB eMMC | Initial release |
-| v1.1 | 4GB DDR4 | 64GB or 128GB | Display improvements, minor tweaks |
-| v1.2 | 4GB or 8GB | 64GB or 128GB | Better WiFi FW, panel tweaks |
-| v2.0+ | 4GB or 8GB LPDDR4 | 128GB eMMC | Improved memory speed, stability |
+All PineBook Pro units share the same SoC, 4GB LPDDR4, ES8316 codec and AP6256 Wi-Fi/Bluetooth module. They differ in keyboard layout (ISO/ANSI) and in the eMMC module fitted (64GB standard, 128GB optional). One upstream device tree (`rk3399-pinebook-pro.dts`) covers all of them.
 
 **Note**: Check your board's PCB silkscreen or CPU markings to determine exact revision.
 
 ## Storage controller mapping
 
-For the ChromiumOS port, use these device paths:
+For the ChromiumOS port, use these device paths. The numbering comes from the `mmc0`/`mmc1`/`mmc2` aliases in upstream `rk3399-pinebook-pro.dts` (`mmc0` is the SDIO Wi-Fi bus), so it does not depend on probe order:
 
 ```bash
 # eMMC (internal)
+/dev/mmcblk2      # full device
+/dev/mmcblk2p1    # boot partition
+/dev/mmcblk2p2    # kernel partition
+/dev/mmcblk2p3    # rootfs partition
+
+# microSD (removable)
 /dev/mmcblk1      # full device
 /dev/mmcblk1p1    # boot partition
 /dev/mmcblk1p2    # kernel partition
 /dev/mmcblk1p3    # rootfs partition
-
-# microSD (removable)
-/dev/mmcblk0      # full device
-/dev/mmcblk0p1    # boot partition
-/dev/mmcblk0p2    # kernel partition
-/dev/mmcblk0p3    # rootfs partition
 
 # NVMe (when using adapter)
 /dev/nvme0n1      # full device
@@ -189,15 +179,16 @@ Essential modules for PineBook Pro boot:
 - rockchip-pmu          # power management unit
 - rk3399-core           # CPU frequency scaling
 - sdhci-of-arasan       # eMMC controller
-- sdhci-of-dwcmshc      # SD card controller (alternative)
+- dw_mmc-rockchip       # microSD and SDIO controllers
 - rk808-regulator       # PMIC regulator
-- rtl8723bs             # Wi-Fi/Bluetooth (SDIO)
+- brcmfmac              # Wi-Fi (AP6256, SDIO)
+- hci_uart              # Bluetooth (AP6256, UART, hci_bcm)
 - rockchip-isp1         # image signal processor (optional)
 - rockchip-dw-hdmi      # HDMI PHY
 - analogix-dp           # DisplayPort (eDP)
 - pwm-rockchip          # PWM for backlight
 - rmi_smbus / rmi_i2c   # touchpad
-- rockchip-es8323       # audio codec
+- snd-soc-es8316        # audio codec
 ```
 
 ## Recommended hardware debugging

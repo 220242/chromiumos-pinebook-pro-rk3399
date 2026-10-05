@@ -33,16 +33,20 @@ This document lists all necessary Linux kernel drivers, firmware blobs, and plat
 - `CONFIG_MMC_BLOCK` - block device for MMC
 - `CONFIG_MMC_SDHCI` - SD Host Controller Interface
 - `CONFIG_MMC_SDHCI_PLTFM` - platform SDHCI driver
-- `CONFIG_MMC_SDHCI_OF_ARASAN` - Arasan SDHCI (for Rockchip)
-- `CONFIG_MMC_SDHCI_OF_DWCMSHC` - Designware SDHCI (alternative)
-- `CONFIG_MMC_SDHCI_ROCKCHIP` - Rockchip-specific SDHCI
-- `CONFIG_MMC_DW` - Designware MMC controller
-- `CONFIG_MMC_DW_ROCKCHIP` - Rockchip DW MMC
+- `CONFIG_MMC_SDHCI_OF_ARASAN` - Arasan SDHCI, the RK3399 eMMC controller (`&sdhci`)
+- `CONFIG_PHY_ROCKCHIP_EMMC` - RK3399 eMMC PHY
+- `CONFIG_MMC_DW` - DesignWare MMC controller
+- `CONFIG_MMC_DW_ROCKCHIP` - Rockchip DW MMC, used for microSD (`&sdmmc`) and the Wi-Fi SDIO bus (`&sdio0`)
+- `CONFIG_PWRSEQ_SIMPLE` - power sequencing for the SDIO Wi-Fi module
+
+`CONFIG_MMC_SDHCI_OF_DWCMSHC` is for RK3568/RK3588 and is not needed on RK3399. There is no `CONFIG_MMC_SDHCI_ROCKCHIP` option in Linux.
 - `CONFIG_BLK_DEV_SD` - SCSI disk support (for SD/eMMC enumeration)
 
 #### NVMe
 - `CONFIG_NVME_CORE` - NVMe core protocol
 - `CONFIG_BLK_DEV_NVME` - NVMe block device driver
+- `CONFIG_PCIE_ROCKCHIP_HOST` - RK3399 PCIe host (single controller, `&pcie0`, up to x4)
+- `CONFIG_PHY_ROCKCHIP_PCIE` - RK3399 PCIe PHY
 - `CONFIG_NVME_FABRICS` - NVMe over Fabrics (optional)
 - `CONFIG_NVME_MULTIPATH` - multipath I/O support
 - `CONFIG_NVME_HWMON` - hardware monitoring for NVMe SSDs
@@ -95,9 +99,8 @@ This document lists all necessary Linux kernel drivers, firmware blobs, and plat
 - `CONFIG_SND_SOC` - ALSA SoC (System-on-Chip) support
 - `CONFIG_SND_SOC_ROCKCHIP` - Rockchip SoC audio
 - `CONFIG_SND_SOC_ROCKCHIP_I2S` - Rockchip I2S controller
-- `CONFIG_SND_SOC_ES8323` - Everest Semi ES8323 audio codec
-- `CONFIG_SND_SOC_ES8328` - alternative codec variant
-- `CONFIG_SND_SOC_SIMPLE_CARD` - simple card for audio routing
+- `CONFIG_SND_SOC_ES8316` - Everest Semi ES8316 audio codec (I2C, address 0x11)
+- `CONFIG_SND_SIMPLE_CARD` - simple-audio-card for audio routing
 - `CONFIG_SND_SIMPLE_CARD_UTILS` - utilities for simple card
 
 ### Networking
@@ -130,22 +133,25 @@ This document lists all necessary Linux kernel drivers, firmware blobs, and plat
 - `CONFIG_RTC_DRV_RK808` - RK808 PMIC RTC
 - `CONFIG_TIMEKEEPING_DEBUG` - timekeeping debugging (optional)
 
-## Wireless drivers (RTL8723BS-specific)
+## Wireless drivers (AMPAK AP6256)
+
+The PineBook Pro uses an AMPAK AP6256 module: Broadcom BCM43456 Wi-Fi on SDIO (`&sdio0`) and BCM4345C5 Bluetooth on UART0.
 
 ### Wi-Fi
-- `CONFIG_RTL8723BS` - Realtek 8723BS Wi-Fi driver (staging driver)
-- `CONFIG_WLAN_VENDOR_REALTEK` - Realtek wireless vendor support
-- `CONFIG_RTLWIFI` - Realtek Wi-Fi library
-- Module: `rtl8723bs` or `rtl8723bs_sdio`
+- `CONFIG_WLAN_VENDOR_BROADCOM` - Broadcom wireless vendor support
+- `CONFIG_BRCMFMAC` - Broadcom FullMAC driver
+- `CONFIG_BRCMFMAC_SDIO` - SDIO bus support for brcmfmac
+- Module: `brcmfmac`
 
 ### Bluetooth
 - `CONFIG_BT` - Bluetooth support
 - `CONFIG_BT_RFCOMM` - RFCOMM protocol
 - `CONFIG_BT_BNEP` - BNEP protocol (Bluetooth networking)
 - `CONFIG_BT_HIDP` - HID over Bluetooth
+- `CONFIG_SERIAL_DEV_BUS` - serdev, so the `bluetooth` node under `&uart0` binds a driver
 - `CONFIG_BT_HCIUART` - UART HCI support
-- `CONFIG_BT_HCIUART_BCSP` - BCSP protocol (if needed)
-- `CONFIG_RTL_BTCOEX` - Realtek BT coexistence (optional)
+- `CONFIG_BT_HCIUART_SERDEV` - serdev-based HCI UART
+- `CONFIG_BT_HCIUART_BCM` - Broadcom UART Bluetooth (`hci_bcm`, compatible `brcm,bcm4345c5`)
 
 ## Firmware blobs (required files)
 
@@ -163,11 +169,11 @@ These are not Linux kernel firmware; they are bootloader/ROM code blobs.
 
 **Location**: `/lib/firmware/` in rootfs
 
-#### Realtek RTL8723BS
-- `rtl8723b_fw.bin` - Bluetooth firmware blob
-- `rtl8723bs_nic.bin` - Wi-Fi NIC firmware blob
-- `rtl8723bs_wowlan.bin` - Wake-on-LAN firmware (optional)
-- `rtl_bt/rtl8723b_config.bin` - Bluetooth configuration (optional)
+#### AMPAK AP6256 (Broadcom)
+- `brcm/brcmfmac43456-sdio.bin` - Wi-Fi firmware (linux-firmware)
+- `brcm/brcmfmac43456-sdio.clm_blob` - regulatory data (linux-firmware)
+- `brcm/brcmfmac43456-sdio.pine64,pinebook-pro.txt` - board NVRAM; brcmfmac tries this board-specific name first and falls back to `brcmfmac43456-sdio.txt`. Not every linux-firmware release ships it; distributions such as Manjaro and Armbian do.
+- `brcm/BCM4345C5.hcd` - Bluetooth patch RAM, loaded by `hci_bcm` (shipped by Armbian/Manjaro firmware packages)
 
 ### Panel and display firmware
 
@@ -241,7 +247,7 @@ After boot, verify key drivers are loaded:
 
 ```bash
 # Check loaded modules
-lsmod | grep -iE 'rtl8723|mmc|nvme|drm|snd|usb'
+lsmod | grep -iE 'brcmfmac|hci_uart|mmc|nvme|drm|snd|usb'
 
 # Check device tree expansion
 ls /sys/devices/platform/ | grep -iE 'rockchip|rk3399'
@@ -270,10 +276,10 @@ A complete PineBook Pro port requires:
 2. **Storage drivers**: MMC/SD (for eMMC + microSD), NVMe (optional), USB
 3. **Display drivers**: DRM, panel, HDMI/eDP controllers, backlight
 4. **Input drivers**: keyboard, touchpad (RMI4), USB HID
-5. **Audio drivers**: I2S, SoC audio, ES8323 codec
-6. **Wireless drivers**: RTL8723BS (Wi-Fi + Bluetooth)
+5. **Audio drivers**: I2S, SoC audio, ES8316 codec
+6. **Wireless drivers**: AP6256 via brcmfmac (Wi-Fi) and hci_bcm (Bluetooth)
 7. **Power management**: CPUfreq, idle states, thermal, PMIC
-8. **Firmware blobs**: Bootloader (Rockchip), wireless (Realtek)
+8. **Firmware blobs**: Bootloader (Rockchip), wireless (Broadcom)
 9. **Device tree**: Complete board configuration with all nodes
 
 This checklist ensures that a kernel image will boot successfully and support all hardware on the PineBook Pro.

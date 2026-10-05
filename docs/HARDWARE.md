@@ -8,12 +8,12 @@ This document tracks the hardware-specific items relevant to a ChromiumOS port f
 - SoC: Rockchip RK3399
 - CPU: ARMv8 big.LITTLE (A72 + A53)
 - GPU: Mali-T860 or equivalent class
-- Memory: DDR4 / LPDDR4 depending on revision
+- Memory: 4GB LPDDR4
 - Display: internal panel, likely needing DRM and panel support
 - Storage: eMMC, microSD, optional NVMe
 - Input: keyboard, touchpad, USB, possibly a custom input controller
-- Audio: internal speakers / audio codec
-- Wireless: Wi-Fi + Bluetooth modules (often Realtek or similar)
+- Audio: Everest Semi ES8316 codec on I2S1, internal speakers
+- Wireless: AMPAK AP6256 (Broadcom BCM43456 Wi-Fi on SDIO via brcmfmac, BCM4345C5 Bluetooth on UART)
 
 ## Key support areas
 

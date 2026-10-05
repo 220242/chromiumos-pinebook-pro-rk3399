@@ -146,15 +146,14 @@ Each build target includes storage-specific kernel drivers, device tree overlays
 
 - Rockchip audio driver package: https://github.com/rockchip-linux/linux/tree/release/sound/soc/rockchip
   - Internal speaker and headphone support
-  - Codec configuration (often Everest Semi ES8323)
+  - Codec: Everest Semi ES8316 on I2S1 (`CONFIG_SND_SOC_ES8316`)
 
 ### Wi-Fi and Bluetooth
 
-- RTL8723 driver reference: https://github.com/morrissimo/rtl8723bs
-  - Wi-Fi and Bluetooth support
-  - Firmware binaries and calibration
-
-- Realtek Linux driver: https://github.com/torvalds/linux/tree/master/drivers/staging/rtl8723bs
+- Module: AMPAK AP6256 (Broadcom BCM43456 Wi-Fi on SDIO, BCM4345C5 Bluetooth on UART)
+- Wi-Fi driver (brcmfmac): https://github.com/torvalds/linux/tree/master/drivers/net/wireless/broadcom/brcm80211/brcmfmac
+- Bluetooth driver (hci_bcm): https://github.com/torvalds/linux/blob/master/drivers/bluetooth/hci_bcm.c
+- Firmware: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/brcm
 
 ### Keyboard and touchpad
 

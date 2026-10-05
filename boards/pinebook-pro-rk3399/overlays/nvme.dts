@@ -1,18 +1,35 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * PineBook Pro (RK3399): NVMe boot target.
+ *
+ * Device tree overlay applied on top of upstream Linux
+ * arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts (compiled with -@).
+ *
+ * RK3399 has a single PCIe 2.1 controller (&pcie0, pcie@f8000000), up to x4
+ * lanes. There is no pcie1. Upstream already wires up the M.2 slot (ep-gpios,
+ * vpcie supplies, num-lanes = <4>); this overlay only makes sure it is on.
+ * Kernel drivers: CONFIG_PCIE_ROCKCHIP_HOST, CONFIG_PHY_ROCKCHIP_PCIE,
+ * CONFIG_BLK_DEV_NVME.
+ *
+ * The RK3399 boot ROM cannot boot from PCIe: U-Boot stays on SPI/eMMC/microSD
+ * and only the root filesystem lives on NVMe.
+ */
+
 /dts-v1/;
+/plugin/;
 
-/ {
-    compatible = "pine64,pinebook-pro-rk3399", "rockchip,rk3399";
-    model = "PineBook Pro (RK3399) NVMe boot target";
+&{/} {
+	model = "Pine64 Pinebook Pro (NVMe boot target)";
+};
 
-    chosen {
-        bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/nvme0n1p3 rw rootwait";
-    };
+&{/chosen} {
+	bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/nvme0n1p3 rw rootwait";
+};
+
+&pcie_phy {
+	status = "okay";
 };
 
 &pcie0 {
-    status = "okay";
-};
-
-&pcie1 {
-    status = "okay";
+	status = "okay";
 };
