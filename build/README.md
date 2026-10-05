@@ -89,7 +89,8 @@ The scripts are the standard flow; the board itself is not ported yet.
   does not exist yet, so the `overlay` stage stops and `setup_board` cannot
   find the board. See [docs/PORTING_GUIDE.md](../docs/PORTING_GUIDE.md).
   To try the toolchain and SDK before that, build a generic board:
-  `BOARD=arm64-generic build/linux/build.sh sdk board packages image`.
+  `BOARD=arm64-generic build/linux/build.sh sdk board packages image`
+  (from Windows: `-Board arm64-generic -Stage sdk,board,packages,image`).
 - **Bootloader.** ChromiumOS ARM images do not carry U-Boot. The Pinebook Pro
   needs U-Boot in SPI flash or at the start of the card, plus a way for it to
   load the ChromiumOS kernel. That belongs in the overlay.

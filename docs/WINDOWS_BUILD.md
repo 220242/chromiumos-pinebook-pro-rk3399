@@ -67,6 +67,7 @@ Useful parameters:
 .\build\windows\Start-PinebookBuild.ps1 -Distro Ubuntu-22.04 -ImageType dev
 .\build\windows\Start-PinebookBuild.ps1 -ManifestBranch release-R130-16033.B
 .\build\windows\Start-PinebookBuild.ps1 -DryRun                  # print commands only
+.\build\windows\Start-PinebookBuild.ps1 -Step Build -Board arm64-generic -Stage sdk,board,packages,image
 ```
 
 `Get-Help .\build\windows\Start-PinebookBuild.ps1 -Full` lists all of them.
@@ -105,7 +106,9 @@ Boot the microSD card first. ChromiumOS installs itself to another disk with
 
 The board is not ported yet: there is no board overlay and no U-Boot setup, so
 `setup_board` fails for `pinebook-pro-rk3399` and a built image would not boot
-on its own. Details are in [build/README.md](../build/README.md#what-is-still-missing-before-an-image-boots).
+on its own. Until then, `-Board arm64-generic` runs the whole flow for a
+generic ARM64 board to check that the SDK works on your machine. Details are
+in [build/README.md](../build/README.md#what-is-still-missing-before-an-image-boots).
 
 ## Troubleshooting
 

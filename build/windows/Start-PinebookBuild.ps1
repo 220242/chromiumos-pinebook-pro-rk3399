@@ -15,6 +15,10 @@ Which steps to run: Preflight, Sync, Build or All (default). Several are allowed
 Build stages passed to build.sh (overlay, sdk, board, packages, image).
 Default: all of them.
 
+.PARAMETER Board
+Board to build. Default: BOARD_NAME from boards/pinebook-pro-rk3399/board.conf.
+arm64-generic is useful for trying the SDK before the board overlay exists.
+
 .PARAMETER Distro
 WSL distro to use. Default: the default WSL distro.
 
@@ -48,6 +52,8 @@ param(
 
     [ValidateSet('overlay', 'sdk', 'board', 'packages', 'image')]
     [string[]]$Stage = @(),
+
+    [string]$Board = '',
 
     [string]$Distro = '',
 
@@ -113,6 +119,7 @@ $RepoWsl = ConvertTo-WslPath $RepoRoot
 $OutputWsl = ConvertTo-WslPath $OutputDir
 
 $envArgs = @('env', "IMAGE_TYPE=$ImageType", "OUTPUT_DIR=$OutputWsl")
+if ($Board) { $envArgs += "BOARD=$Board" }
 if ($ChromiumOSRoot) { $envArgs += "CHROMIUMOS_ROOT=$ChromiumOSRoot" }
 if ($ManifestBranch) { $envArgs += "MANIFEST_BRANCH=$ManifestBranch" }
 if ($DryRun) { $envArgs += 'DRY_RUN=1' }
