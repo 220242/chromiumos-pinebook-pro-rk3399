@@ -5,7 +5,9 @@ These scripts run the standard ChromiumOS flow for the board named in
 fetch the source with `repo`, enter `cros_sdk`, `setup_board`,
 `build_packages`, `build_image`, then write the image to a microSD card.
 
-They run on an x86_64 Linux machine or in WSL2 on Windows.
+They run on an x86_64 Linux machine or in WSL2 on Windows, with Python 3.11
+or newer (on Ubuntu 22.04, `sudo apt install python3.11`; the scripts use it
+when the default `python3` is older).
 On Windows, see [docs/WINDOWS_BUILD.md](../docs/WINDOWS_BUILD.md).
 
 ```
@@ -81,14 +83,15 @@ output/
     └── build-YYYYMMDD-HHMMSS.log
 ```
 
-## What is still missing before an image boots
+## What a bootable image needs
 
-The scripts are the standard flow; the board itself is not ported yet.
+The scripts are the standard flow; the board support comes from the overlay.
 
-- **Board overlay.** `boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/`
-  does not exist yet, so the `overlay` stage stops and `setup_board` cannot
-  find the board. See [docs/PORTING_GUIDE.md](../docs/PORTING_GUIDE.md).
-  To try the toolchain and SDK before that, build a generic board:
+- **Board overlay.** The `overlay` stage copies
+  `boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/`. Without that
+  directory it stops, and `setup_board` cannot find the board. See
+  [docs/PORTING_GUIDE.md](../docs/PORTING_GUIDE.md).
+  To try the toolchain and SDK without it, build a generic board:
   `BOARD=arm64-generic build/linux/build.sh sdk board packages image`
   (from Windows: `-Board arm64-generic -Stage sdk,board,packages,image`).
 - **Bootloader.** ChromiumOS ARM images do not carry U-Boot. The Pinebook Pro

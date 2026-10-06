@@ -24,11 +24,13 @@ swap=16GB
 Then run `wsl --shutdown` so it takes effect. The WSL virtual disk grows on
 demand; the drive that holds it (usually C:) needs about 200 GB free.
 
-Inside Ubuntu, install the host tools and set a git identity (`repo` needs it):
+Inside Ubuntu, install the host tools and set a git identity (`repo` needs it).
+The ChromiumOS tools need Python 3.11 or newer; Ubuntu 22.04's `python3` is
+3.10, so install `python3.11` too and the scripts use it automatically:
 
 ```bash
 sudo apt update
-sudo apt install -y git curl xz-utils python3 rsync
+sudo apt install -y git curl xz-utils python3 python3.11 rsync
 git config --global user.name  "Your Name"
 git config --global user.email "you@example.com"
 ```
@@ -102,13 +104,14 @@ Boot the microSD card first. ChromiumOS installs itself to another disk with
 `chromeos-install --dst /dev/mmcblk2`. See
 [INSTALL_TO_EMMC_NVME.md](INSTALL_TO_EMMC_NVME.md).
 
-## Known gaps
+## Board support
 
-The board is not ported yet: there is no board overlay and no U-Boot setup, so
-`setup_board` fails for `pinebook-pro-rk3399` and a built image would not boot
-on its own. Until then, `-Board arm64-generic` runs the whole flow for a
-generic ARM64 board to check that the SDK works on your machine. Details are
-in [build/README.md](../build/README.md#what-is-still-missing-before-an-image-boots).
+`setup_board` for `pinebook-pro-rk3399` needs the board overlay in
+`boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/`, and the image only
+boots on the Pinebook Pro once U-Boot is in place. Without the overlay,
+`-Board arm64-generic` runs the whole flow for a generic ARM64 board to check
+that the SDK works on your machine. Details are in
+[build/README.md](../build/README.md#what-a-bootable-image-needs).
 
 ## Troubleshooting
 
@@ -117,5 +120,5 @@ in [build/README.md](../build/README.md#what-is-still-missing-before-an-image-bo
 | `$'\r': command not found` | scripts have CRLF endings; see section 2 |
 | `... is on a Windows drive` | set `-ChromiumOSRoot` / `CHROMIUMOS_ROOT` to a path inside WSL |
 | build killed, out of memory | raise `memory=` and `swap=` in `.wslconfig`, `wsl --shutdown` |
-| `No board overlay for pinebook-pro-rk3399` | expected until the overlay is written; see Known gaps |
+| `No board overlay for pinebook-pro-rk3399` | the overlay directory is missing from your checkout; see Board support |
 | anything else | the full log is in `output\logs\` |

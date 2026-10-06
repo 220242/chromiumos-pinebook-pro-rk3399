@@ -196,9 +196,9 @@ build/linux/flash-microsd.sh /dev/sdX
 From Windows: `.\build\windows\Start-PinebookBuild.ps1`.
 
 See [build/README.md](build/README.md) for stages and settings and
-[docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md) for the WSL2 setup. The board
-overlay and bootloader are not written yet, so `setup_board` fails for this
-board until they are; see [docs/STORAGE.md](docs/STORAGE.md) and
-[docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md).
+[docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md) for the WSL2 setup. `setup_board`
+for this board needs the board overlay in
+`boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/`; see
+[docs/STORAGE.md](docs/STORAGE.md) and [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md).
 
 
