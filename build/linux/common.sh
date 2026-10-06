@@ -39,6 +39,21 @@ OVERLAY_DST="${CHROMIUMOS_ROOT}/src/overlays/overlay-${BOARD}"
 
 export PATH="${DEPOT_TOOLS}:${PATH}"
 
+# ChromiumOS tools (cros_sdk, repo) need Python 3.11 or newer; Ubuntu 22.04's
+# python3 is 3.10. If a newer python3.X is installed, make it python3.
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  for _py in python3.13 python3.12 python3.11; do
+    if command -v "${_py}" >/dev/null; then
+      _shim="${XDG_CACHE_HOME:-${HOME}/.cache}/pinebook-build/bin"
+      mkdir -p "${_shim}"
+      ln -sfn "$(command -v "${_py}")" "${_shim}/python3"
+      export PATH="${_shim}:${PATH}"
+      break
+    fi
+  done
+  unset _py _shim
+fi
+
 if [[ -t 1 ]]; then
   _c_info=$'\e[1;34m' _c_warn=$'\e[1;33m' _c_err=$'\e[1;31m' _c_ok=$'\e[1;32m' _c_off=$'\e[0m'
 else

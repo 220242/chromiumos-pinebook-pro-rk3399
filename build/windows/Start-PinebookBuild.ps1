@@ -84,8 +84,13 @@ function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+# wsl.exe prints warnings (e.g. about %UserProfile%\.wslconfig) on stderr.
+# Windows PowerShell 5.1 turns native stderr into errors, which
+# $ErrorActionPreference = 'Stop' would make fatal, so judge native commands
+# by their exit code only.
 function Invoke-Wsl {
     param([Parameter(Mandatory)][string[]]$Command)
+    $ErrorActionPreference = 'Continue'
     & wsl.exe @WslArgs -e @Command
     if ($LASTEXITCODE -ne 0) {
         throw "WSL command failed with exit code ${LASTEXITCODE}: $($Command -join ' ')"
@@ -93,7 +98,8 @@ function Invoke-Wsl {
 }
 
 function ConvertTo-WslPath([string]$WindowsPath) {
-    $result = & wsl.exe @WslArgs -e wslpath -a $WindowsPath
+    $ErrorActionPreference = 'Continue'
+    $result = & wsl.exe @WslArgs -e wslpath -a $WindowsPath 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $result) {
         throw "wslpath could not convert '$WindowsPath'."
     }

@@ -31,10 +31,17 @@ info "Board: ${BOARD}, image type: ${IMAGE_TYPE}, stages: ${stages[*]}"
 
 stage_overlay() {
   if [[ -d "${OVERLAY_SRC}" ]]; then
+    # A checkout made on Windows can turn LF into CRLF, which breaks
+    # profile.bashrc and the ebuilds in every package build.
+    local crlf
+    crlf="$(grep -rlI $'\r' "${OVERLAY_SRC}" || true)"
+    [[ -z "${crlf}" ]] || die "CRLF line endings in the overlay (re-checkout with LF):"$'\n'"${crlf}"
     # Copied, not symlinked: the chroot only sees files inside the checkout.
     info "Copying ${OVERLAY_SRC} -> ${OVERLAY_DST}"
     run mkdir -p "${OVERLAY_DST}"
-    run rsync -a --delete "${OVERLAY_SRC}/" "${OVERLAY_DST}/"
+    # Files portage creates there (e.g. a Manifest) are root-owned, so copy no
+    # owner, group, permissions or times, and compare by content instead.
+    run rsync -rlD --checksum --delete "${OVERLAY_SRC}/" "${OVERLAY_DST}/"
   elif [[ -d "${OVERLAY_DST}" ]]; then
     warn "No overlay in this repo; using the one already in ${OVERLAY_DST}"
   else

@@ -37,6 +37,12 @@ for tool in git curl python3 rsync xz; do
   if command -v "${tool}" >/dev/null; then ok "${tool} found"; else fail "${tool} is missing (sudo apt install ${tool/xz/xz-utils})"; fi
 done
 
+if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  ok "python3 is $(python3 -c 'import platform; print(platform.python_version())')"
+else
+  fail "ChromiumOS needs Python 3.11+ (python3 is $(python3 -V 2>&1)). On Ubuntu 22.04: sudo apt install python3.11"
+fi
+
 if [[ -n "$(git config --global user.email || true)" && -n "$(git config --global user.name || true)" ]]; then
   ok "git user.name and user.email are set"
 else
