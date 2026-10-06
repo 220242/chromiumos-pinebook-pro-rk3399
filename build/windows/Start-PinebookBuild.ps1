@@ -31,7 +31,9 @@ Linux path of the ChromiumOS checkout inside WSL. Default: ~/chromiumos.
 Must not be under /mnt/c, /mnt/d and so on.
 
 .PARAMETER ManifestBranch
-ChromiumOS manifest branch, e.g. main or release-R130-16033.B. Default: main.
+ChromiumOS manifest branch, e.g. stable, main or release-R130-16033.B.
+Default: stable, the newest main snapshot with prebuilt binaries (on main,
+Chrome usually has no prebuilt and is compiled from source for hours).
 
 .PARAMETER OutputDir
 Windows folder for the image and logs. Default: <repo>\output.

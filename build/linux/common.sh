@@ -6,7 +6,8 @@
 #   CHROMIUMOS_ROOT  ChromiumOS checkout; default: ~/chromiumos
 #   DEPOT_TOOLS      depot_tools checkout; default: ~/depot_tools
 #   MANIFEST_URL     default: https://chromium.googlesource.com/chromiumos/manifest
-#   MANIFEST_BRANCH  default: main (or e.g. release-R130-16033.B)
+#   MANIFEST_BRANCH  default: stable (the newest main snapshot with prebuilt
+#                    binaries, Chrome included); or main, release-R130-16033.B
 #   IMAGE_TYPE       base | dev | test; default: test
 #   OUTPUT_DIR       where finished images and logs go; default: <repo>/output
 #   JOBS             parallel jobs; default: nproc
@@ -26,7 +27,7 @@ fi
 CHROMIUMOS_ROOT="${CHROMIUMOS_ROOT:-${HOME}/chromiumos}"
 DEPOT_TOOLS="${DEPOT_TOOLS:-${HOME}/depot_tools}"
 MANIFEST_URL="${MANIFEST_URL:-https://chromium.googlesource.com/chromiumos/manifest}"
-MANIFEST_BRANCH="${MANIFEST_BRANCH:-main}"
+MANIFEST_BRANCH="${MANIFEST_BRANCH:-stable}"
 IMAGE_TYPE="${IMAGE_TYPE:-test}"
 OUTPUT_DIR="${OUTPUT_DIR:-${REPO_ROOT}/output}"
 JOBS="${JOBS:-$(nproc)}"
