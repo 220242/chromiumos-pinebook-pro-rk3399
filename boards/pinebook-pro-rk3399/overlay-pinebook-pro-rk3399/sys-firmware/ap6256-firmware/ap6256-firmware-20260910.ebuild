@@ -20,10 +20,13 @@ for f in "${FILES[@]}"; do
 	SRC_URI+=" ${BASE_URI}/${f} -> ${P}-${f}"
 done
 
-LICENSE="linux-fw-redistributable no-source-code"
+# Licence of the brcm/ files in linux-firmware; the SDK has no
+# linux-fw-redistributable licence text.
+LICENSE="LICENCE.broadcom_bcm43xx no-source-code"
 SLOT="0"
 KEYWORDS="*"
-RESTRICT="binchecks strip"
+# mirror: not on the ChromeOS mirrors, fetch from SRC_URI despite force-mirror.
+RESTRICT="binchecks mirror strip"
 
 S="${WORKDIR}"
 

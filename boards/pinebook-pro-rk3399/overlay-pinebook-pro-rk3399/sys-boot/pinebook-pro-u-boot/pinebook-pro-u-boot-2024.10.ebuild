@@ -17,8 +17,10 @@ SRC_URI="
 LICENSE="GPL-2 BSD"
 SLOT="0"
 KEYWORDS="*"
-# Bare-metal firmware: no stripping, no host test suite.
-RESTRICT="strip test"
+# Bare-metal firmware: no stripping, no host test suite. mirror: the SDK sets
+# FEATURES=force-mirror and these tarballs are not on the ChromeOS mirrors,
+# so fetch them from SRC_URI.
+RESTRICT="mirror strip test"
 
 BDEPEND="
 	dev-lang/swig
@@ -33,12 +35,27 @@ TFA_S="${WORKDIR}/arm-trusted-firmware-${TFA_PV}"
 # core, which needs a bare-metal 32-bit Arm compiler (see toolchain.conf).
 M0_CROSS_COMPILE="arm-none-eabi-"
 
+src_prepare() {
+	default
+	# tools/Makefile calls plain pkg-config, which the SDK refuses; use the
+	# HOSTPKG_CONFIG that src_configure and src_compile pass in.
+	sed -i 's/\$(shell pkg-config /$(shell $(HOSTPKG_CONFIG) /' tools/Makefile || die
+}
+
 src_configure() {
-	tc-export BUILD_CC
-	emake -C "${S}" HOSTCC="${BUILD_CC}" pinebook-pro-rk3399_defconfig
+	# U-Boot and TF-A are built with GCC and GNU binutils (the RK3399 M0
+	# firmware in TF-A needs arm-none-eabi-gcc), which the SDK blocks unless
+	# the ebuild opts in.
+	cros_allow_gnu_build_tools
+	tc-export BUILD_CC BUILD_PKG_CONFIG
+	# Kconfig probes the target compiler, so CROSS_COMPILE is needed here too
+	# (the SDK refuses unprefixed gcc and pkg-config).
+	local args=( CROSS_COMPILE="${CHOST}-" HOSTCC="${BUILD_CC}"
+		HOSTPKG_CONFIG="${BUILD_PKG_CONFIG}" )
+	emake -C "${S}" "${args[@]}" pinebook-pro-rk3399_defconfig
 	"${S}"/scripts/kconfig/merge_config.sh -m -O "${S}" "${S}"/.config \
 		"${FILESDIR}"/chromiumos.config || die
-	emake -C "${S}" HOSTCC="${BUILD_CC}" olddefconfig
+	emake -C "${S}" "${args[@]}" olddefconfig
 }
 
 src_compile() {
@@ -47,15 +64,24 @@ src_compile() {
 	# Firmware: no sysroot, no board CFLAGS/LDFLAGS.
 	unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 
+	# E=0: TF-A v2.10 predates the SDK's GCC 15; don't make its new warnings
+	# fatal.
 	emake -C "${TFA_S}" \
 		CROSS_COMPILE="${cross}" \
 		M0_CROSS_COMPILE="${M0_CROSS_COMPILE}" \
 		HOSTCC="${BUILD_CC}" \
+		E=0 \
 		PLAT=rk3399 bl31
 
+	# DTC: use the SDK's dtc and its Python libfdt module instead of building
+	# them in tree; the in-tree pylibfdt extension picks up the board's Python
+	# settings in the SDK and fails to link. A full path: the dtb rules list
+	# $(DTC) as a prerequisite.
 	emake -C "${S}" \
 		CROSS_COMPILE="${cross}" \
 		HOSTCC="${BUILD_CC}" \
+		HOSTPKG_CONFIG="${BUILD_PKG_CONFIG}" \
+		DTC="$(type -P dtc)" \
 		BL31="${TFA_S}/build/rk3399/release/bl31/bl31.elf"
 }
 
