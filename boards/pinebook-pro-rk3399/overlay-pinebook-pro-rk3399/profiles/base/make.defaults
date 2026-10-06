@@ -16,3 +16,8 @@ VIDEO_CARDS="panfrost rockchip"
 
 # Real hardware, not a VM: no virtual KMS driver.
 USE="${USE} -vkms"
+
+# No Intel Wi-Fi here (arm64-generic ships iwlwifi-all). rockchip/dptx.bin is
+# the firmware of the RK3399 cdn-dp block, used for DisplayPort over USB-C.
+# The AP6256 Wi-Fi/Bluetooth firmware comes from sys-firmware/ap6256-firmware.
+LINUX_FIRMWARE="-iwlwifi-all rockchip-dptx"
