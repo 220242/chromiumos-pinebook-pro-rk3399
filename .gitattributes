@@ -6,6 +6,7 @@
 *.dts    text eol=lf
 *.ps1    text eol=crlf
 # Everything in the board overlay and the Linux build scripts is read by
-# bash or portage inside WSL/the SDK, whatever the file name.
-boards/**     text eol=lf
-build/linux/** text eol=lf
+# bash or portage inside WSL/the SDK, whatever the file name. text=auto
+# leaves binary files (firmware, images) untouched.
+boards/**      text=auto eol=lf
+build/linux/** text=auto eol=lf
