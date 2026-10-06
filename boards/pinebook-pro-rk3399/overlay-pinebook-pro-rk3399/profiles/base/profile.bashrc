@@ -28,13 +28,22 @@ _pinebook_pro_kernel_build_dir() {
 
 cros_post_src_configure_pinebook_pro_kernel_config() {
 	_pinebook_pro_is_kernel || return 0
-	local build_dir make_args=( ARCH=arm64 )
+	local build_dir
 	build_dir=$(_pinebook_pro_kernel_build_dir)
-	[[ $(tc-getCC) == *clang* ]] && make_args+=( LLVM=1 )
+	# The same prefixed tools cros-kernel's kmake uses: the SDK refuses plain
+	# clang, ld.bfd and friends, and Kconfig probes the compiler and linker.
+	local make_args=(
+		ARCH=arm64
+		CC="$(tc-getCC)" LD=ld.lld AR=llvm-ar NM=llvm-nm
+		OBJCOPY=llvm-objcopy STRIP=llvm-strip
+		CLANG_CROSS_FLAGS="--target=${CHOST}"
+		HOSTCC="$(tc-getBUILD_CC)" HOSTCXX="$(tc-getBUILD_CXX)"
+		HOSTLD="$(tc-getBUILD_LD)" HOSTPKG_CONFIG="$(tc-getBUILD_PKG_CONFIG)"
+	)
+	use llvm_ias && make_args+=( LLVM_IAS=1 )
 	einfo "pinebook-pro: merging kernel/pinebook-pro.config into ${build_dir}/.config"
 	"${PINEBOOK_PRO_OVERLAY}/kernel/apply-fragment.sh" "${S}" "${build_dir}" \
-		"${PINEBOOK_PRO_OVERLAY}/kernel/pinebook-pro.config" \
-		"${make_args[@]}" CROSS_COMPILE="${CHOST}-" \
+		"${PINEBOOK_PRO_OVERLAY}/kernel/pinebook-pro.config" "${make_args[@]}" \
 		|| die "pinebook-pro: kernel config fragment did not apply"
 }
 

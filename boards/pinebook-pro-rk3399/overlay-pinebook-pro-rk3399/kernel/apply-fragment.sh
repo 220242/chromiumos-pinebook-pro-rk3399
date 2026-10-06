@@ -21,16 +21,18 @@ if [[ $# -lt 3 ]]; then
 	exit 2
 fi
 
-src=$1
-out=$2
-fragment=$3
+src=$(realpath "$1")
+out=$(realpath "$2")
+fragment=$(realpath "$3")
 shift 3
 
 config="${out}/.config"
 [[ -f "${config}" ]] || { echo "apply-fragment: no ${config}" >&2; exit 1; }
 [[ -f "${fragment}" ]] || { echo "apply-fragment: no ${fragment}" >&2; exit 1; }
 
-"${src}/scripts/kconfig/merge_config.sh" -m -O "${out}" "${config}" "${fragment}" >/dev/null
+# merge_config.sh makes its temporary file in the current directory; the
+# kernel source is read-only inside the SDK's sandbox, so run it in ${out}.
+(cd "${out}" && "${src}/scripts/kconfig/merge_config.sh" -m -O "${out}" "${config}" "${fragment}") >/dev/null
 make -s -C "${src}" O="${out}" "$@" olddefconfig
 
 # Compare what the fragment asked for with what olddefconfig kept. A module
