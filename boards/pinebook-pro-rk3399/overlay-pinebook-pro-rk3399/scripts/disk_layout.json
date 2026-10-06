@@ -1,0 +1,56 @@
+{
+  "_comment": "Pinebook Pro: arm64-generic's layout plus a 16 MiB RWFW (partition 11). The Rockchip boot ROM loads the boot loader from sector 64, and u-boot-rockchip.bin is about 9 MiB, so it has to sit inside a partition nothing else uses. RWFW is the first partition in legacy_disk_layout.json and holds no data on this board. install-u-boot.sh checks the actual image before writing and refuses if any other partition overlaps. ROOT-A is ext4 without a journal instead of ext2: build_image labels files with security.selinux xattrs, and the WSL2 kernel's ext2 driver has no xattr support (CONFIG_EXT2_FS_XATTR is off), while its ext4 driver does. Overrides must list partitions in the parent's order (11, 2, 4, 12, 3).",
+  "parent": "legacy_disk_layout.json",
+  "layouts": {
+    "common": [
+      {
+        "num": 11,
+        "size": "16 MiB"
+      },
+      {
+        "num": 2,
+        "size": "64 MiB"
+      },
+      {
+        "num": 4,
+        "size": "64 MiB"
+      },
+      {
+        "num": 12,
+        "size": "128 MiB"
+      },
+      {
+        "num": 3,
+        "fs_format": "ext4",
+        "fs_options": {
+          "ext4": "-i 65536 -O ^has_journal"
+        }
+      }
+    ],
+    "usb": [
+      {
+        "num": 1,
+        "size": "8 GiB"
+      }
+    ],
+    "usb-updatable": [
+      {
+        "num": 1,
+        "size": "8 GiB"
+      }
+    ],
+    "factory_install": [
+      {
+        "num": 3,
+        "size": "560 MiB",
+        "fs_size": "552 MiB"
+      }
+    ],
+    "4gb-rootfs": [
+      {
+        "num": 1,
+        "size": "3072 MiB"
+      }
+    ]
+  }
+}

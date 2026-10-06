@@ -1,0 +1,31 @@
+# Pinebook Pro: Rockchip RK3399 (2x Cortex-A72 + 4x Cortex-A53), 4 GB LPDDR4,
+# 64-bit (arm64) userland. Inherits arm64-generic (profiles/base/parent) and
+# overrides the CPU, kernel and GPU settings.
+
+# Start empty: "${USE}" below would otherwise copy arm64-generic's USE into
+# this profile, after arm64-generic's package.use, and undo it (for example
+# "sys-apps/flashrom internal", without which flashrom fails to link).
+USE=""
+
+BOARD_COMPILER_FLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a53"
+
+# ChromeOS kernel 6.6 with device tree support, RK3399 Chromebook (gru)
+# splitconfig flavour; profile.bashrc merges kernel/pinebook-pro.config on top.
+CHROMEOS_KERNEL_ARCH="arm64"
+CHROMEOS_KERNEL_SPLITCONFIG="chromiumos-rockchip64"
+USE="${USE} -kernel-5_15 kernel-6_6 device_tree"
+
+# Mali-T860 through the open Panfrost driver (media-libs/mesa-panfrost, see
+# virtual/opengles). No "rockchip": minigbm's rockchip backend needs the old
+# ChromeOS kernel's rockchip_drm.h; without it minigbm uses dumb buffers for
+# the upstream rockchipdrm (VOP) driver. VIDEO_CARDS adds to arm64-generic's,
+# so drop its llvmpipe.
+VIDEO_CARDS="-llvmpipe panfrost"
+
+# Real hardware, not a VM: no virtual KMS driver.
+USE="${USE} -vkms"
+
+# No Intel Wi-Fi here (arm64-generic ships iwlwifi-all). rockchip/dptx.bin is
+# the firmware of the RK3399 cdn-dp block, used for DisplayPort over USB-C.
+# The AP6256 Wi-Fi/Bluetooth firmware comes from sys-firmware/ap6256-firmware.
+LINUX_FIRMWARE="-iwlwifi-all rockchip-dptx"
