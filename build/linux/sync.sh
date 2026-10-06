@@ -16,7 +16,9 @@ fi
 
 if [[ -d "${DEPOT_TOOLS}/.git" ]]; then
   info "Updating depot_tools in ${DEPOT_TOOLS}"
-  run git -C "${DEPOT_TOOLS}" pull --ff-only --quiet
+  # depot_tools updates itself to a detached origin/main, so pull would fail.
+  run git -C "${DEPOT_TOOLS}" fetch --quiet origin
+  run git -C "${DEPOT_TOOLS}" checkout --quiet --detach origin/main
 else
   info "Cloning depot_tools into ${DEPOT_TOOLS}"
   run git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "${DEPOT_TOOLS}"
