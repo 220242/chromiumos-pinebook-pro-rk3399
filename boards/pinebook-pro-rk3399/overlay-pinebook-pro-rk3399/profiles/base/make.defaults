@@ -11,8 +11,10 @@ CHROMEOS_KERNEL_SPLITCONFIG="chromiumos-rockchip64"
 USE="${USE} -kernel-5_15 kernel-6_6 device_tree"
 
 # Mali-T860 through the open Panfrost driver (media-libs/mesa-panfrost, see
-# virtual/opengles); rockchip selects the minigbm backend for the RK3399 VOP.
-VIDEO_CARDS="panfrost rockchip"
+# virtual/opengles). No "rockchip": minigbm's rockchip backend needs the old
+# ChromeOS kernel's rockchip_drm.h; without it minigbm uses dumb buffers for
+# the upstream rockchipdrm (VOP) driver.
+VIDEO_CARDS="panfrost"
 
 # Real hardware, not a VM: no virtual KMS driver.
 USE="${USE} -vkms"
