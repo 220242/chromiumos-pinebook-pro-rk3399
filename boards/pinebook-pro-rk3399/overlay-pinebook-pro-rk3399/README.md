@@ -14,15 +14,16 @@ name `pinebook-pro-rk3399` (`BOARD_NAME` in `../board.conf`).
 
 | Path | What it does |
 |------|--------------|
-| `metadata/layout.conf`, `profiles/repo_name` | Overlay metadata, repo name `pinebook-pro-rk3399` |
+| `metadata/layout.conf`, `profiles/repo_name` | Overlay metadata, repo name `pinebook-pro-rk3399`; `arm64-generic` is a master overlay |
 | `toolchain.conf` | `aarch64-cros-linux-gnu`, plus `arm-none-eabi` for the RK3399 Cortex-M0 firmware inside TF-A |
-| `profiles/base/parent` | Generic ChromiumOS arm64 profile (64-bit userland) |
+| `profiles/base/parent` | `arm64-generic:base`: unibuild config, TPM2, GLES and the rest of a buildable arm64 board |
 | `profiles/base/make.defaults` | ChromeOS kernel 6.6, `device_tree`, `rockchip64` splitconfig, Panfrost, CPU flags |
 | `profiles/base/profile.bashrc` | Hooks on `sys-kernel/chromeos-kernel-*`: merge `kernel/pinebook-pro.config`, install `Image` and the device tree to `/boot/pinebook-pro/` |
 | `kernel/pinebook-pro.config` | Kernel fragment for the upstream `rk3399-pinebook-pro.dts` |
 | `kernel/apply-fragment.sh` | Merges the fragment, runs `olddefconfig`, fails if a symbol was dropped |
-| `scripts/disk_layout.json` | Grows RWFW (partition 11) to 16 MiB so the boot loader at sector 64 fits inside it |
-| `virtual/chromeos-bsp` | Pulls in the board BSP |
+| `scripts/disk_layout.json` | `legacy_disk_layout.json` with arm64-generic's sizes, plus RWFW (partition 11) grown to 16 MiB so the boot loader at sector 64 fits inside it |
+| `virtual/chromeos-bsp` | Pulls in the board BSP (version 3, above arm64-generic's) |
+| `virtual/opengles` | Mesa Panfrost (`media-libs/mesa-panfrost`) for the Mali-T860 |
 | `chromeos-base/chromeos-bsp-pinebook-pro-rk3399` | U-Boot boot script (`/boot/pinebook-pro/boot.scr`); depends on the firmware and U-Boot |
 | `sys-boot/pinebook-pro-u-boot` | Upstream U-Boot v2024.10, `pinebook-pro-rk3399_defconfig` + `files/chromiumos.config`, with TF-A v2.10.0 BL31 |
 | `sys-firmware/ap6256-firmware` | AP6256 (BCM43456) Wi-Fi firmware, CLM blob, NVRAM and Bluetooth patch, pinned Armbian commit |
@@ -100,7 +101,7 @@ v2.10.0:
 - The `profile.bashrc` hooks: the `cros_post_src_configure_*` and
   `cros_post_src_install_*` names, and how they find the kernel build
   directory, follow the ChromiumOS hook convention but have not run.
-- That `disk_layout.json` inherits from `common_disk_layout.json` this way and
+- That `disk_layout.json` inherits from `legacy_disk_layout.json` this way and
   that RWFW really starts at sector 64; `install-u-boot.sh` checks the result
   on every image.
 - U-Boot and TF-A built with the SDK's toolchain (`${CHOST}-` and
