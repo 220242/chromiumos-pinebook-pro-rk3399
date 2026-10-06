@@ -2,6 +2,11 @@
 # 64-bit (arm64) userland. Inherits arm64-generic (profiles/base/parent) and
 # overrides the CPU, kernel and GPU settings.
 
+# Start empty: "${USE}" below would otherwise copy arm64-generic's USE into
+# this profile, after arm64-generic's package.use, and undo it (for example
+# "sys-apps/flashrom internal", without which flashrom fails to link).
+USE=""
+
 BOARD_COMPILER_FLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a53"
 
 # ChromeOS kernel 6.6 with device tree support, RK3399 Chromebook (gru)
@@ -13,8 +18,9 @@ USE="${USE} -kernel-5_15 kernel-6_6 device_tree"
 # Mali-T860 through the open Panfrost driver (media-libs/mesa-panfrost, see
 # virtual/opengles). No "rockchip": minigbm's rockchip backend needs the old
 # ChromeOS kernel's rockchip_drm.h; without it minigbm uses dumb buffers for
-# the upstream rockchipdrm (VOP) driver.
-VIDEO_CARDS="panfrost"
+# the upstream rockchipdrm (VOP) driver. VIDEO_CARDS adds to arm64-generic's,
+# so drop its llvmpipe.
+VIDEO_CARDS="-llvmpipe panfrost"
 
 # Real hardware, not a VM: no virtual KMS driver.
 USE="${USE} -vkms"
