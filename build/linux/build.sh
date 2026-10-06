@@ -75,6 +75,13 @@ stage_image() {
   fi
   run mkdir -p "${OUTPUT_DIR}/images"
   run cp --sparse=always "${src}" "${dst}"
+  # The board's boot loader goes in front of the partitions (sector 64 on the
+  # RK3399), so the copy in OUTPUT_DIR can be written to a card as is.
+  local board_dir="${BOARD_CONF%/*}"
+  local install_loader="${board_dir}/install-u-boot.sh"
+  if [[ "${board_dir##*/}" == "${BOARD}" && -f "${install_loader}" ]]; then
+    run env CHROMIUMOS_ROOT="${CHROMIUMOS_ROOT}" bash "${install_loader}" "${dst}"
+  fi
   if [[ "${DRY_RUN}" != "1" ]]; then
     (cd "${OUTPUT_DIR}/images" && sha256sum "$(basename "${dst}")" > "$(basename "${dst}").sha256")
   fi
