@@ -26,53 +26,35 @@ This port targets three primary storage options:
 - Default boot media on most PineBook Pro units
 - Higher performance and reliability
 - Internal storage partition scheme
-- Build target: `chromiumos-eMMC`
 
 ### 2. microSD card
 - Removable external storage
 - Fallback or experimental boot option
 - Variable performance depending on card quality
-- Build target: `chromiumos-microSD`
 
 ### 3. NVMe (M.2 SSD via adapter or native slot)
 - Optional high-performance upgrade
 - Requires compatible M.2 to USB adapter or direct connector
 - Best performance characteristics
-- Build target: `chromiumos-NVMe`
 
-Each build target includes storage-specific kernel drivers, device tree overlays, and partition layouts.
+One image is built (see `build/README.md`); it boots from microSD and can then be installed to eMMC or NVMe.
 
 ## Repository layout
 
 ```text
 .
 ├── README.md
-├── .gitignore
-├── docs/
-│   ├── BUILDING.md
-│   ├── STORAGE.md
-│   └── HARDWARE.md
+├── .gitattributes             keeps shell scripts LF on Windows clones
 ├── boards/
 │   └── pinebook-pro-rk3399/
-│       ├── README.md
-│       ├── board.conf
-│       ├── overlays/
-│       │   ├── emmc.dts
-│       │   ├── microsd.dts
-│       │   └── nvme.dts
-│       └── kernel-config/
-│           ├── common.config
-│           ├── emmc.config
-│           ├── microsd.config
-│           └── nvme.config
-├── scripts/
-│   ├── bootstrap.sh
-│   ├── build-eMMC.sh
-│   ├── build-microSD.sh
-│   ├── build-NVMe.sh
-│   └── flash-image.sh
-├── third_party/
-│   └── README.md
+│       ├── board.conf         BOARD_NAME used by the build scripts
+│       ├── overlays/          device tree fragments (emmc, microsd, nvme)
+│       └── kernel-config/     kernel config fragments
+├── build/
+│   ├── README.md              how the build scripts work
+│   ├── linux/                 preflight, sync, build, flash-microsd
+│   └── windows/               Start-PinebookBuild.ps1 (runs the Linux scripts in WSL2)
+├── docs/                      hardware, porting, storage and Windows build notes
 └── sources/
     └── UPSTREAM_SOURCES.md
 ```
@@ -81,7 +63,8 @@ Each build target includes storage-specific kernel drivers, device tree overlays
 
 ### Official ChromiumOS repositories
 
-- Main ChromiumOS source tree: https://chromium.googlesource.com/chromiumos/platform/cros-container-guest-tools
+- Main ChromiumOS source tree (all repositories): https://chromium.googlesource.com/chromiumos/ (fetched with `repo` from the manifest below)
+- ChromiumOS developer guide: https://www.chromium.org/chromium-os/developer-library/guides/development/developer-guide/
 - ChromiumOS build scripts: https://chromium.googlesource.com/chromiumos/platform/crosutils/
 - ChromiumOS manifest: https://chromium.googlesource.com/chromiumos/manifest
 - ChromiumOS docs: https://chromium.googlesource.com/chromiumos/docs/
@@ -200,6 +183,21 @@ This is a basic scaffold for early-stage porting work. The repository does not y
 
 ## Getting started
 
-See `docs/BUILDING.md` and `docs/STORAGE.md` for an initial development workflow and environment setup.
+On Linux or in WSL2:
+
+```bash
+build/linux/preflight.sh
+build/linux/sync.sh
+build/linux/build.sh
+build/linux/flash-microsd.sh /dev/sdX
+```
+
+From Windows: `.\build\windows\Start-PinebookBuild.ps1`.
+
+See [build/README.md](build/README.md) for stages and settings and
+[docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md) for the WSL2 setup. `setup_board`
+for this board needs the board overlay in
+`boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/`; see
+[docs/STORAGE.md](docs/STORAGE.md) and [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md).
 
 
