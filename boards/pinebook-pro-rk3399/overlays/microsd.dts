@@ -1,15 +1,27 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * PineBook Pro (RK3399): microSD boot target (primary development target).
+ *
+ * Device tree overlay applied on top of upstream Linux
+ * arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts (compiled with -@).
+ *
+ * The microSD slot is the Synopsys DesignWare MMC controller (&sdmmc,
+ * mmc@fe320000). Upstream aliases it as mmc1, so the card is /dev/mmcblk1.
+ * Kernel driver: CONFIG_MMC_DW + CONFIG_MMC_DW_ROCKCHIP.
+ */
+
 /dts-v1/;
+/plugin/;
 
-/ {
-    compatible = "pine64,pinebook-pro-rk3399", "rockchip,rk3399";
-    model = "PineBook Pro (RK3399) microSD boot target";
+&{/} {
+	model = "Pine64 Pinebook Pro (microSD boot target)";
+};
 
-    chosen {
-        bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/mmcblk0p3 rw rootwait";
-    };
+&{/chosen} {
+	bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/mmcblk1p3 rw rootwait";
 };
 
 &sdmmc {
-    status = "okay";
-    disable-wp;
+	disable-wp;
+	status = "okay";
 };

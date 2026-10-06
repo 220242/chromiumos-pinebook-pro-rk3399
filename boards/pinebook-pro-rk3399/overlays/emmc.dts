@@ -1,21 +1,42 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * PineBook Pro (RK3399): eMMC boot target.
+ *
+ * Device tree overlay applied on top of upstream Linux
+ * arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts (compiled with -@).
+ *
+ * The eMMC sits on the Arasan SDHCI controller (&sdhci, mmc@fe330000).
+ * Upstream aliases it as mmc2, so the disk is /dev/mmcblk2.
+ * Kernel driver: CONFIG_MMC_SDHCI_OF_ARASAN.
+ *
+ * RAM: 4 GB. RK3399 maps DRAM at 0x0 up to 0xf8000000; the top 128 MB of the
+ * 4 GB address window is MMIO, so the usable range is 0x0..0xf8000000.
+ * U-Boot normally rewrites /memory from the detected DRAM size; this node only
+ * documents the expected layout.
+ */
+
 /dts-v1/;
+/plugin/;
 
-/ {
-    compatible = "pine64,pinebook-pro-rk3399", "rockchip,rk3399";
-    model = "PineBook Pro (RK3399) eMMC boot target";
+&{/} {
+	model = "Pine64 Pinebook Pro (eMMC boot target)";
+	/* Same as rk3399-base.dtsi; repeated so dtc can check the reg below. */
+	#address-cells = <2>;
+	#size-cells = <2>;
 
-    chosen {
-        bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/mmcblk1p3 rw rootwait";
-    };
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0xf8000000>;
+	};
+};
 
-    memory@0 {
-        device_type = "memory";
-        reg = <0x0 0x0 0x0 0x80000000>;
-    };
+&{/chosen} {
+	bootargs = "console=ttyS2,1500000 earlycon=uart8250,mmio32,0xff1a0000 root=/dev/mmcblk2p3 rw rootwait";
 };
 
 &sdhci {
-    status = "okay";
-    bus-width = <8>;
-    non-removable;
+	bus-width = <8>;
+	mmc-hs200-1_8v;
+	non-removable;
+	status = "okay";
 };

@@ -28,8 +28,10 @@ This file keeps the list of upstream and board-specific sources that are relevan
 - Rockchip DRM / display: https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/rockchip
 - Mali GPU support: https://github.com/rockchip-linux/gpu-mali-midgard
 - Rockchip audio stack: https://github.com/rockchip-linux/linux/tree/release/sound/soc/rockchip
-- Realtek Linux Wi-Fi/Bluetooth reference: https://github.com/torvalds/linux/tree/master/drivers/staging/rtl8723bs
-- RTL8723BS project: https://github.com/morrissimo/rtl8723bs
+- PineBook Pro device tree (upstream Linux): https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts
+- Broadcom brcmfmac Wi-Fi driver (AP6256 / BCM43456): https://github.com/torvalds/linux/tree/master/drivers/net/wireless/broadcom/brcm80211/brcmfmac
+- Broadcom UART Bluetooth driver (hci_bcm, BCM4345C5): https://github.com/torvalds/linux/blob/master/drivers/bluetooth/hci_bcm.c
+- Broadcom firmware (linux-firmware): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/brcm
 
 ## General notes
 

@@ -39,10 +39,10 @@ cat /proc/partitions            # partition table
 dmesg | grep -iE 'mmc|sd|nvme'  # storage subsystem messages
 
 # For eMMC:
-ls -la /dev/mmcblk1*            # should exist if eMMC is present
+ls -la /dev/mmcblk2*            # should exist if eMMC is present
 
 # For microSD:
-ls -la /dev/mmcblk0*            # should exist when SD card is inserted
+ls -la /dev/mmcblk1*            # should exist when SD card is inserted
 
 # For NVMe (if adapter plugged):
 ls -la /dev/nvme*               # should exist if NVMe enumeration works
@@ -54,12 +54,12 @@ Record in your project notes:
 
 - Board PCB revision (check silkscreen)
 - CPU package marking (A72/A53 cluster information)
-- Memory type (DDR4 or LPDDR4)
+- Memory (4GB LPDDR4 on every unit)
 - eMMC capacity and speed class
-- Wireless chipset (likely RTL8723BS)
+- Wireless module (AMPAK AP6256: Broadcom BCM43456 Wi-Fi + BCM4345C5 Bluetooth)
 - Display panel model (if identifiable)
 
-**Example**: `PineBook Pro v1.2 | RK3399 | 4GB DDR4 | 128GB eMMC | RTL8723BS | 14" IPS panel`
+**Example**: `PineBook Pro | RK3399 | 4GB LPDDR4 | 64GB eMMC | AP6256 | 14" 1080p IPS panel`
 
 ## Step 2: Set up ChromiumOS build environment
 
@@ -215,79 +215,51 @@ vim ~/trunk/src/third_party/kernel/arch/arm64/boot/dts/rockchip/pinebook-pro-rk3
 
 **Goal**: Configure U-Boot for PineBook Pro boot flow.
 
-### 5.1 Clone U-Boot source
+### 5.1 Use upstream U-Boot
+
+Mainline U-Boot has supported the Pinebook Pro since v2020.07, so no fork is needed. The board overlay builds it with `sys-boot/pinebook-pro-u-boot` (U-Boot 2024.10).
 
 ```bash
-# Inside cros_sdk
-cd ~/trunk/src/third_party/u-boot
-
-# Add Pine64 U-Boot fork
-git remote add pine64 https://github.com/pine64/u-boot.git
-git fetch pine64
-git checkout pine64/pinebook-pro  # or appropriate branch
+git clone https://source.denx.de/u-boot/u-boot.git
+cd u-boot
+git checkout v2024.10
 ```
 
-### 5.2 Create or update U-Boot defconfig
+### 5.2 Build with the existing defconfig
+
+The upstream defconfig is `configs/pinebook-pro-rk3399_defconfig`. Do not copy or hand-edit a generic RK3399 config.
 
 ```bash
-# Check if PineBook Pro defconfig exists
-grep -l "pinebook" u-boot/configs/*defconfig
-
-# If not, copy and customize the RK3399 generic config
-cp u-boot/configs/rockchip-rk3399-defconfig \
-  u-boot/configs/pinebook-pro-rk3399-defconfig
-
-# Edit the defconfig
-vim u-boot/configs/pinebook-pro-rk3399-defconfig
+# BL31 comes from upstream TF-A (make PLAT=rk3399 bl31)
+export BL31=/path/to/trusted-firmware-a/build/rk3399/release/bl31/bl31.elf
+make CROSS_COMPILE=aarch64-linux-gnu- pinebook-pro-rk3399_defconfig
+make CROSS_COMPILE=aarch64-linux-gnu-
 ```
 
-**Key U-Boot options** to enable:
-
-```
-CONFIG_ARM64=y
-CONFIG_ROCKCHIP=y
-CONFIG_ROCKCHIP_RK3399=y
-CONFIG_ROCKCHIP_SPL_BACK_TO_BROM=y
-CONFIG_SYS_TEXT_BASE=0x02000000
-CONFIG_MMC_SDHCI=y
-CONFIG_MMC_SDHCI_ROCKCHIP=y
-CONFIG_CMD_EXT4=y
-CONFIG_CMD_FAT=y
-CONFIG_PARTITION_TYPE_GUID=y
-```
+Output: `u-boot-rockchip.bin` (`idbloader.img` + `u-boot.itb`), written at sector 64 of the boot media.
 
 ## Step 6: Firmware and binary blobs
 
 **Goal**: Gather firmware needed for boot and hardware support.
 
-### 6.1 Rockchip firmware (DDR, mini-loader)
+### 6.1 Boot firmware
 
-Download from Rockchip RKBIN:
+Upstream U-Boot initialises DDR in its own TPL, so the Rockchip `rkbin` DDR and mini-loader blobs are not needed. The only extra boot firmware is TF-A BL31 from 5.2, built from source.
 
-```bash
-git clone https://github.com/rockchip-linux/rkbin.git ~/rkbin
-
-# Copy needed binaries
-cp ~/rkbin/bin/rk33/rk3399_ddr_800MHz_v1.26.bin \
-  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/
-cp ~/rkbin/bin/rk33/rk3399_miniloader_v1.26.bin \
-  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/
-```
-
-### 6.2 Wireless firmware (Realtek RTL8723BS)
+### 6.2 Wireless firmware (AMPAK AP6256, Broadcom)
 
 ```bash
-# Get Realtek firmware from official or community source
-git clone https://github.com/morrissimo/rtl8723bs.git ~/rtl8723bs_src
-
-# Firmware files (usually in firmware/ or similar)
-cp ~/rtl8723bs_src/firmware/*.bin \
-  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/
+# Broadcom Wi-Fi firmware from linux-firmware
+git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git ~/linux-firmware
+mkdir -p ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/brcm
+cp ~/linux-firmware/brcm/brcmfmac43456-sdio.* \
+  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/brcm/
 ```
 
-Expect at minimum:
-- `rtl8723b_fw.bin` (Bluetooth firmware)
-- `rtl8723bs_nic.bin` (Wi-Fi NIC firmware)
+Expect at minimum, under `/lib/firmware/brcm/`:
+- `brcmfmac43456-sdio.bin` and `brcmfmac43456-sdio.clm_blob` (Wi-Fi firmware, linux-firmware)
+- `brcmfmac43456-sdio.pine64,pinebook-pro.txt` (board NVRAM; take it from Manjaro or Armbian firmware if your linux-firmware lacks it)
+- `BCM4345C5.hcd` (Bluetooth patch RAM, from Manjaro or Armbian firmware)
 
 ## Step 7: Build Linux baseline (pre-ChromiumOS)
 
@@ -313,12 +285,12 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) dtbs
 ```bash
 cd ~/trunk/src/third_party/u-boot
 
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- pinebook-pro-rk3399-defconfig
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+# BL31 must point at the TF-A bl31.elf (see 5.2)
+make CROSS_COMPILE=aarch64-linux-gnu- pinebook-pro-rk3399_defconfig
+make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 
 # Output:
-# - u-boot.bin
-# - u-boot-dtb.bin
+# - u-boot-rockchip.bin (idbloader.img + u-boot.itb)
 ```
 
 ## Step 8: Flash and test on hardware
@@ -333,8 +305,8 @@ make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
 # On your build machine:
 BOARD_TARGET="/dev/sdX"  # Replace X with your eMMC/adapter device
 
-# Write U-Boot to boot sector
-sudo dd if=u-boot.bin of="${BOARD_TARGET}" seek=64 bs=512 conv=notrunc
+# Write U-Boot (idbloader + u-boot.itb) at sector 64
+sudo dd if=u-boot-rockchip.bin of="${BOARD_TARGET}" seek=64 bs=512 conv=notrunc
 
 # Write kernel at offset (example: 8192)
 sudo dd if=arch/arm64/boot/Image of="${BOARD_TARGET}" seek=8192 bs=512 conv=notrunc
@@ -371,7 +343,7 @@ Loading device tree...
 Linux kernel boot message...
 Rockchip platform init...
 eMMC/SD controller init...
-Storage devices detected: /dev/mmcblk1 (eMMC)
+Storage devices detected: /dev/mmcblk2 (eMMC)
 Keyboard and touchpad input...
 [OK] System booted successfully
 ```
@@ -417,7 +389,7 @@ cros flash --board=pinebook-pro-rk3399 "${TARGET_DEVICE}" "${IMAGE_PATH}/recover
 ### 10.1 eMMC build
 
 ```bash
-# Primary target - use the default configuration
+# Internal install target (microSD in 10.2 is the primary bring-up target)
 build_image --board=pinebook-pro-rk3399 --image_types=dev,recovery
 ```
 
@@ -455,11 +427,11 @@ vim ~/trunk/src/third_party/kernel/arch/arm64/boot/dts/rockchip/pinebook-pro-rk3
 
 ### 11.2 Audio codec configuration
 
-Enable ES8323 audio codec in kernel and device tree.
+Enable the ES8316 audio codec (`CONFIG_SND_SOC_ES8316`, `simple-audio-card` on I2S1). The upstream device tree already describes it.
 
 ### 11.3 Wi-Fi/Bluetooth setup
 
-Load firmware and configure RTL8723BS drivers in kernel and rootfs.
+Enable `brcmfmac` (Wi-Fi on SDIO) and `hci_uart` with `hci_bcm` (Bluetooth on UART0) in the kernel, and install the AP6256 firmware from 6.2 in the rootfs.
 
 ## Step 12: Final validation checklist
 

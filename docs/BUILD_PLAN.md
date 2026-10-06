@@ -65,4 +65,4 @@ This order keeps the foundation stable and gives a reliable fallback path while 
 
 ## Summary
 
-The PineBook Pro RK3399 port should be treated as a staged board bring-up, with eMMC as the primary target, microSD as the flexible recovery path, and NVMe as an advanced storage option.
+The PineBook Pro RK3399 port should be treated as a staged board bring-up, with microSD as the primary bring-up and recovery target, eMMC as the internal install target, and NVMe as an advanced storage option (rootfs only, since the RK3399 cannot boot from PCIe).

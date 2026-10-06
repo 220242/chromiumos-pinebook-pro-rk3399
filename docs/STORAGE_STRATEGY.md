@@ -63,34 +63,34 @@ cros flash --board=pinebook-pro-rk3399-microsd /dev/sdX recovery_image.bin
 # 1. Create partitions on eMMC
 # List available block devices
 lsblk
-# Expected: /dev/mmcblk1 (eMMC), /dev/mmcblk0 (microSD running system)
+# Expected: /dev/mmcblk2 (eMMC), /dev/mmcblk1 (microSD running system)
 
 # 2. Partition eMMC (example using parted)
-sudo parted /dev/mmcblk1 mklabel gpt
-sudo parted /dev/mmcblk1 mkpart boot fat32 2048s 264191s
-sudo parted /dev/mmcblk1 mkpart kernel ext2 264192s 2361343s
-sudo parted /dev/mmcblk1 mkpart rootfs ext4 2361344s 100%
+sudo parted /dev/mmcblk2 mklabel gpt
+sudo parted /dev/mmcblk2 mkpart boot fat32 2048s 264191s
+sudo parted /dev/mmcblk2 mkpart kernel ext2 264192s 2361343s
+sudo parted /dev/mmcblk2 mkpart rootfs ext4 2361344s 100%
 
 # 3. Format partitions
-sudo mkfs.fat -F32 /dev/mmcblk1p1
-sudo mkfs.ext4 /dev/mmcblk1p3
+sudo mkfs.fat -F32 /dev/mmcblk2p1
+sudo mkfs.ext4 /dev/mmcblk2p3
 
 # 4. Copy kernel and rootfs from microSD to eMMC
 # Mount partitions
 sudo mkdir -p /mnt/emmc-boot /mnt/emmc-rootfs
-sudo mount /dev/mmcblk1p1 /mnt/emmc-boot
-sudo mount /dev/mmcblk1p3 /mnt/emmc-rootfs
+sudo mount /dev/mmcblk2p1 /mnt/emmc-boot
+sudo mount /dev/mmcblk2p3 /mnt/emmc-rootfs
 
 # Copy rootfs (running from microSD)
 sudo rsync -avx / /mnt/emmc-rootfs/ --exclude={/dev,/proc,/sys,/tmp,/run,/mnt}
 
 # 5. Update boot configuration on eMMC
-# Modify /mnt/emmc-rootfs/etc/fstab to reference /dev/mmcblk1p3
-sudo sed -i 's|/dev/mmcblk0|/dev/mmcblk1|g' /mnt/emmc-rootfs/etc/fstab
+# Modify /mnt/emmc-rootfs/etc/fstab to reference /dev/mmcblk2p3
+sudo sed -i 's|/dev/mmcblk1|/dev/mmcblk2|g' /mnt/emmc-rootfs/etc/fstab
 
 # 6. Write bootloader and kernel to eMMC
-sudo dd if=/boot/u-boot.bin of=/dev/mmcblk1 bs=512 seek=64 conv=notrunc
-sudo dd if=/boot/Image of=/dev/mmcblk1p2 bs=4096 conv=notrunc
+sudo dd if=/boot/u-boot.bin of=/dev/mmcblk2 bs=512 seek=64 conv=notrunc
+sudo dd if=/boot/Image of=/dev/mmcblk2p2 bs=4096 conv=notrunc
 sudo cp /boot/pinebook-pro-rk3399-emmc.dtb /mnt/emmc-boot/
 
 # 7. Unmount and sync
@@ -103,7 +103,7 @@ sudo poweroff
 
 **Validation after eMMC boot**:
 - Verify system boots from eMMC
-- Check storage device is `/dev/mmcblk1`
+- Check storage device is `/dev/mmcblk2`
 - Confirm no microSD dependency in rootfs
 - Re-insert microSD and verify it mounts as secondary storage
 
@@ -186,7 +186,7 @@ build_image --board=pinebook-pro-rk3399-microsd --image_types=dev,recovery
 ```
 
 **Characteristics**:
-- Boot arguments: `root=/dev/mmcblk0p3`
+- Boot arguments: `root=/dev/mmcblk1p3`
 - Device tree: `pinebook-pro-rk3399-microsd.dtb`
 - Kernel config: includes `microsd.config` fragment
 - U-Boot optimized for SD card boot
@@ -201,7 +201,7 @@ build_image --board=pinebook-pro-rk3399-emmc --image_types=dev,recovery
 
 **Characteristics**:
 - For flashing from running microSD system
-- Boot arguments: `root=/dev/mmcblk1p3`
+- Boot arguments: `root=/dev/mmcblk2p3`
 - Device tree: `pinebook-pro-rk3399-emmc.dtb`
 - Kernel config: includes `emmc.config` fragment
 

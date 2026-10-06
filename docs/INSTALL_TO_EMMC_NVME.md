@@ -11,7 +11,7 @@ This document provides detailed instructions for installing ChromiumOS from a mi
 - Target storage (eMMC or NVMe) with no important data
 
 ### For eMMC installation
-- Internal eMMC recognized in `lsblk` as `/dev/mmcblk1`
+- Internal eMMC recognized in `lsblk` as `/dev/mmcblk2`
 - At least 32GB eMMC capacity
 - Proper eMMC controller driver support
 
@@ -32,12 +32,12 @@ This document provides detailed instructions for installing ChromiumOS from a mi
 # Verify storage devices
 lsblk
 # Output should show:
-# mmcblk0     (microSD - currently running system)
-# mmcblk1     (eMMC - target for installation)
-# mmcblk0p1, mmcblk0p2, mmcblk0p3  (microSD partitions)
+# mmcblk1     (microSD - currently running system)
+# mmcblk2     (eMMC - target for installation)
+# mmcblk1p1, mmcblk1p2, mmcblk1p3  (microSD partitions)
 
 # Check eMMC is empty/safe to wipe
-sudo fdisk -l /dev/mmcblk1
+sudo fdisk -l /dev/mmcblk2
 # Note the total capacity
 
 # Open root shell for installation
@@ -47,40 +47,40 @@ sudo -s
 ### Step 2: Partition eMMC
 
 ```bash
-# WARNING: This will erase /dev/mmcblk1
+# WARNING: This will erase /dev/mmcblk2
 # Double-check you have the correct device before proceeding
 
 # Clear any existing partition table
-sudo dd if=/dev/zero of=/dev/mmcblk1 bs=512 count=2048
+sudo dd if=/dev/zero of=/dev/mmcblk2 bs=512 count=2048
 
 # Create GPT partition table
-sudo parted -s /dev/mmcblk1 mklabel gpt
+sudo parted -s /dev/mmcblk2 mklabel gpt
 
 # Create three partitions:
 # 1. Boot partition (FAT32, 256MB)
-sudo parted -s /dev/mmcblk1 mkpart boot fat32 2048s 264191s
+sudo parted -s /dev/mmcblk2 mkpart boot fat32 2048s 264191s
 
 # 2. Kernel partition (ext2, 2GB)
-sudo parted -s /dev/mmcblk1 mkpart kernel ext2 264192s 2361343s
+sudo parted -s /dev/mmcblk2 mkpart kernel ext2 264192s 2361343s
 
 # 3. Rootfs partition (ext4, remaining space)
-sudo parted -s /dev/mmcblk1 mkpart rootfs ext4 2361344s 100%
+sudo parted -s /dev/mmcblk2 mkpart rootfs ext4 2361344s 100%
 
 # Verify partitions were created
-sudo fdisk -l /dev/mmcblk1
+sudo fdisk -l /dev/mmcblk2
 ```
 
 ### Step 3: Format partitions
 
 ```bash
 # Format boot partition (FAT32)
-sudo mkfs.fat -F32 /dev/mmcblk1p1
+sudo mkfs.fat -F32 /dev/mmcblk2p1
 
 # Format rootfs partition (ext4)
-sudo mkfs.ext4 -F -L "chromeos-rootfs" /dev/mmcblk1p3
+sudo mkfs.ext4 -F -L "chromeos-rootfs" /dev/mmcblk2p3
 
 # Verify filesystems
-sudo blkid | grep mmcblk1
+sudo blkid | grep mmcblk2
 ```
 
 ### Step 4: Copy rootfs from microSD to eMMC
@@ -90,8 +90,8 @@ sudo blkid | grep mmcblk1
 sudo mkdir -p /mnt/emmc-boot /mnt/emmc-rootfs
 
 # Mount eMMC partitions
-sudo mount /dev/mmcblk1p1 /mnt/emmc-boot
-sudo mount /dev/mmcblk1p3 /mnt/emmc-rootfs
+sudo mount /dev/mmcblk2p1 /mnt/emmc-boot
+sudo mount /dev/mmcblk2p3 /mnt/emmc-rootfs
 
 # Copy entire rootfs from microSD to eMMC
 # This preserves all ChromiumOS system files
@@ -116,13 +116,13 @@ ls -la /mnt/emmc-rootfs/bin /mnt/emmc-rootfs/boot /mnt/emmc-rootfs/etc
 
 ```bash
 # Edit fstab to point to eMMC device
-sudo sed -i 's|/dev/mmcblk0|/dev/mmcblk1|g' /mnt/emmc-rootfs/etc/fstab
+sudo sed -i 's|/dev/mmcblk1|/dev/mmcblk2|g' /mnt/emmc-rootfs/etc/fstab
 
 # Verify changes
 echo "Updated fstab:"
 sudo grep mmcblk /mnt/emmc-rootfs/etc/fstab
 
-# Should show mmcblk1 (not mmcblk0)
+# Should show mmcblk2 (not mmcblk1)
 ```
 
 ### Step 6: Copy bootloader and kernel
@@ -138,8 +138,8 @@ sudo cp /boot/dts/pinebook-pro-rk3399-emmc.dtb /mnt/emmc-rootfs/boot/
 # Update bootloader environment for eMMC
 # (if fw_setenv is available)
 if command -v fw_setenv >/dev/null; then
-    sudo fw_setenv root /dev/mmcblk1p3
-    sudo fw_setenv bootargs "console=ttyS2,1500000 root=/dev/mmcblk1p3 rw rootwait"
+    sudo fw_setenv root /dev/mmcblk2p3
+    sudo fw_setenv bootargs "console=ttyS2,1500000 root=/dev/mmcblk2p3 rw rootwait"
 fi
 
 # Verify files in place
@@ -186,16 +186,16 @@ sudo poweroff
 ```bash
 # After eMMC boots successfully, verify storage device
 lsblk
-# Should show mmcblk1 as root device (not mmcblk0)
+# Should show mmcblk2 as root device (not mmcblk1)
 
 # Check mount points
 df -h
-# Root (/) should be on /dev/mmcblk1p3
+# Root (/) should be on /dev/mmcblk2p3
 
 # Verify microSD functionality (optional)
 # Insert microSD card and check it mounts as secondary storage
 lsblk
-# Should show both mmcblk0 (microSD) and mmcblk1 (eMMC)
+# Should show both mmcblk1 (microSD) and mmcblk2 (eMMC)
 ```
 
 ## Installation to NVMe
@@ -352,7 +352,7 @@ df -h
 # Check performance improvement over eMMC
 # (optional benchmark)
 hdparm -Tt /dev/nvme0n1
-hdparm -Tt /dev/mmcblk1  # compare with eMMC if available
+hdparm -Tt /dev/mmcblk2  # compare with eMMC if available
 ```
 
 ## Troubleshooting
@@ -371,7 +371,7 @@ sudo -s
 ```bash
 # Verify device exists
 lsblk
-ls -la /dev/mmcblk1 /dev/nvme0n1
+ls -la /dev/mmcblk2 /dev/nvme0n1
 
 # Check dmesg for controller errors
 dmesg | grep -iE 'error|fail|controller'
@@ -398,7 +398,7 @@ iostat -x 1
 # Try flashing U-Boot again
 
 sudo dd if=/usr/lib/u-boot/pinebook-pro/u-boot.bin \
-  of=/dev/mmcblk1 bs=512 seek=64 conv=notrunc
+  of=/dev/mmcblk2 bs=512 seek=64 conv=notrunc
 ```
 
 ### NVMe not detected
