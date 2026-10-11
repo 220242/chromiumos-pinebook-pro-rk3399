@@ -1,0 +1,3 @@
+# Waydroid's network script runs dnsmasq as the DHCP server of the Android
+# container's bridge.
+net-dns/dnsmasq dhcp

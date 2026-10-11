@@ -1,0 +1,21 @@
+Use $PKG_CONFIG, so a cross build gets the target's libgbinder flags.
+
+--- a/setup.py
++++ b/setup.py
+@@ -1,12 +1,13 @@
+-import sys, subprocess
++import os, sys, subprocess
+ from setuptools import setup, Extension
+ from Cython.Build import cythonize
+ 
+ 
+ def pkgconfig(package, kw):
+     flag_map = {'-I': 'include_dirs', '-L': 'library_dirs', '-l': 'libraries'}
+-    output = subprocess.getoutput(
+-        'pkg-config --cflags --libs {}'.format(package))
++    # Cross builds (ChromiumOS) name the target's pkg-config in $PKG_CONFIG.
++    output = subprocess.getoutput('{} --cflags --libs {}'.format(
++        os.environ.get('PKG_CONFIG', 'pkg-config'), package))
+     for token in output.strip().split():
+         kw.setdefault(flag_map.get(token[:2]), []).append(token[2:])
+     return kw
