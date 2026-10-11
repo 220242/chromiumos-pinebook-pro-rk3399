@@ -29,3 +29,8 @@ USE="${USE} -vkms"
 # the firmware of the RK3399 cdn-dp block, used for DisplayPort over USB-C.
 # The AP6256 Wi-Fi/Bluetooth firmware comes from sys-firmware/ap6256-firmware.
 LINUX_FIRMWARE="-iwlwifi-all rockchip-dptx"
+
+# No TPM on the Pinebook Pro. With encrypted stateful, chromeos_startup
+# cannot load the TPM system key and reboots on every boot (boot loop seen on
+# the hardware); keep /var and /home/chronos on the plain stateful partition.
+USE="${USE} -encrypted_stateful"
