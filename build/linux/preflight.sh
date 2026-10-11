@@ -33,8 +33,9 @@ else
   fail "sudo is missing."
 fi
 
-for tool in git curl python3 rsync xz; do
-  if command -v "${tool}" >/dev/null; then ok "${tool} found"; else fail "${tool} is missing (sudo apt install ${tool/xz/xz-utils})"; fi
+declare -A pkg=( [xz]=xz-utils [mcopy]=mtools [sfdisk]=fdisk )
+for tool in git curl python3 rsync xz mcopy sfdisk; do
+  if command -v "${tool}" >/dev/null; then ok "${tool} found"; else fail "${tool} is missing (sudo apt install ${pkg[${tool}]:-${tool}})"; fi
 done
 
 if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
