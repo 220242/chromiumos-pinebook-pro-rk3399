@@ -1,0 +1,18 @@
+#!/bin/sh
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+#
+# Bring-up: run chromeos_startup under strace (see startup.override), because
+# it exits with status 1 without logging why. The trace goes to
+# /run/chromeos_startup.strace.log, which pinebook-boot-logs copies to FAT.
+
+log=/run/chromeos_startup.strace.log
+if [ -x /usr/bin/strace ]; then
+	/usr/bin/strace -f -tt -s 256 -o "${log}" /sbin/chromeos_startup "$@"
+else
+	echo "no strace in the image" > "${log}"
+	/sbin/chromeos_startup "$@"
+fi
+rc=$?
+echo "chromeos_startup exit status ${rc}" >> "${log}"
+exit "${rc}"

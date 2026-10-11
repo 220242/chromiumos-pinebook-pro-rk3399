@@ -17,7 +17,11 @@ S="${WORKDIR}"
 # U-Boot only goes into the board sysroot (/build/<board>/firmware), where
 # install-u-boot.sh picks it up; it is not part of the rootfs.
 DEPEND="sys-boot/pinebook-pro-u-boot"
-RDEPEND="sys-firmware/ap6256-firmware"
+# strace: bring-up only, for pinebook-startup-trace.
+RDEPEND="
+	dev-debug/strace
+	sys-firmware/ap6256-firmware
+"
 BDEPEND="dev-embedded/u-boot-tools"
 
 src_compile() {
@@ -39,4 +43,9 @@ src_install() {
 	dosbin "${FILESDIR}/pinebook-boot-logs"
 	insinto /etc/init
 	doins "${FILESDIR}/pinebook-boot-logs.conf"
+
+	# Bring-up: chromeos_startup exits with status 1 without logging why; run
+	# it under strace (startup.override replaces the exec line of startup.conf).
+	dosbin "${FILESDIR}/pinebook-startup-trace"
+	doins "${FILESDIR}/startup.override"
 }

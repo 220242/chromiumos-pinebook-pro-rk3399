@@ -20,8 +20,15 @@ args=( --board="${board}" --from="$(dirname "${image}")" --image="$(basename "${
 trap '"${mount_gpt}" --unmount "${args[@]}"' EXIT
 
 echo ">>> Installing into the image: $*"
+# build_image appends the release fields to /etc/lsb-release after the
+# packages are installed; a package that installs that file (the board's BSP
+# does, via doappid) would drop them, so keep the image's copy.
+lsb=${root}/etc/lsb-release
+sudo cp -a "${lsb}" /tmp/pinebook-patch-lsb-release
 sudo "emerge-${board}" --root="${root}" --root-deps=rdeps --usepkgonly \
 	--nodeps --oneshot --jobs=4 "$@"
+sudo cp -a /tmp/pinebook-patch-lsb-release "${lsb}"
+sudo rm -f /tmp/pinebook-patch-lsb-release
 
 selinux_config=${root}/etc/selinux/config
 if [[ -f ${selinux_config} ]]; then
