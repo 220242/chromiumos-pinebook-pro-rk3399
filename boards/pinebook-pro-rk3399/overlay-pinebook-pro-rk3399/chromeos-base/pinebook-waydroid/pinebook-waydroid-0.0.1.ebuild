@@ -1,11 +1,12 @@
 # Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=8
+# EAPI 7: the SDK's Portage has no EAPI 8.
+EAPI=7
 
 # A wide range, with unknown ones ignored: the board's Python and the
 # eclass's list of implementations depend on the ChromiumOS checkout.
-PYTHON_COMPAT=( python3_{9..15} )
+PYTHON_COMPAT=( python3_{8..15} )
 PYTHON_COMPAT_NO_STRICT=1
 
 inherit python-single-r1
@@ -20,11 +21,12 @@ KEYWORDS="*"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 
 # e2fsprogs: mkfs.ext4 and e2fsck for the ANDROID-DATA partition.
+# dbus-python without a USE dependency, as in app-containers/waydroid.
 RDEPEND="${PYTHON_DEPS}
 	app-containers/waydroid
+	dev-python/dbus-python
 	sys-apps/dbus
 	sys-fs/e2fsprogs
-	$(python_gen_cond_dep 'dev-python/dbus-python[${PYTHON_USEDEP}]')
 "
 
 src_install() {

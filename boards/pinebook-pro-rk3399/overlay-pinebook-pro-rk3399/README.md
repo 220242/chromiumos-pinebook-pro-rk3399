@@ -32,6 +32,7 @@ name `pinebook-pro-rk3399` (`BOARD_NAME` in `../board.conf`).
 | `app-containers/lxc` | LXC 7.0.0 for Waydroid's container, without AppArmor, seccomp, SELinux or systemd |
 | `dev-libs/libglibutil`, `dev-libs/gbinder`, `dev-python/gbinder` | libgbinder and its Python module, Waydroid's binder client |
 | `profiles/base/package.use` | dnsmasq with DHCP, for the Android container's network |
+| `profiles/base/package.mask` | Masks arm64-generic's `virtual/chromeos-bsp`: if the board's cannot be installed, the build stops instead of using it |
 
 `../install-u-boot.sh` writes the built boot loader into a disk image.
 

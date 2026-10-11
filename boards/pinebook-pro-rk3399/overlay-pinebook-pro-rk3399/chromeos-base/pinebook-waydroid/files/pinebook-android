@@ -551,8 +551,16 @@ def root_env():
 
 def as_user(**kw):
     pw = chronos()
-    return dict(user=pw.pw_uid, group=pw.pw_gid, extra_groups=[],
-                env=session_env(), cwd=USER_HOME, **kw)
+    if sys.version_info >= (3, 9):
+        ids = dict(user=pw.pw_uid, group=pw.pw_gid, extra_groups=[])
+    else:
+        # Python 3.8's Popen has no user/group arguments.
+        def drop_root():
+            os.setgroups([])
+            os.setgid(pw.pw_gid)
+            os.setuid(pw.pw_uid)
+        ids = dict(preexec_fn=drop_root)
+    return dict(env=session_env(), cwd=USER_HOME, **ids, **kw)
 
 
 def run_user(cmd, timeout=120, check=True):

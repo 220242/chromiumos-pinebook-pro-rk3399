@@ -1,0 +1,6 @@
+# arm64-generic's virtual/chromeos-bsp (2-r1) must never stand in for this
+# board's: when a package that ours pulls in cannot be installed (one was
+# masked by its EAPI), Portage quietly took arm64-generic's and built an image
+# without this board's BSP (boot script, Wi-Fi firmware). With it masked,
+# the build stops instead.
+<virtual/chromeos-bsp-3

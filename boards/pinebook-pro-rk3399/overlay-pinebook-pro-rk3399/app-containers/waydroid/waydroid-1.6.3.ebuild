@@ -5,13 +5,13 @@
 # OpenRC, polkit, AppArmor, nftables or PulseAudio, and no PyGObject (files/gi
 # has the parts of GLib Waydroid uses). The container is started by
 # chromeos-base/pinebook-waydroid, which also provides the Wayland display
-# (Chrome's) and the session bus.
+# (Chrome's) and the session bus. EAPI 7: the SDK's Portage has no EAPI 8.
 
-EAPI=8
+EAPI=7
 
 # A wide range, with unknown ones ignored: the board's Python and the
 # eclass's list of implementations depend on the ChromiumOS checkout.
-PYTHON_COMPAT=( python3_{9..15} )
+PYTHON_COMPAT=( python3_{8..15} )
 PYTHON_COMPAT_NO_STRICT=1
 
 inherit python-single-r1
@@ -30,18 +30,19 @@ REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 # PyGObject is replaced by files/gi: it needs GObject introspection, which
 # ChromiumOS does not cross-compile for its boards. The stand-in calls
 # libglib (dev-libs/glib) through ctypes.
+# The Python modules carry no USE dependency on the implementation: the board
+# builds them for its one Python, and python_gen_cond_dep's placeholders
+# differ between eclass versions.
 RDEPEND="${PYTHON_DEPS}
 	app-containers/lxc
 	dev-libs/glib:2
+	dev-python/dbus-python
+	>=dev-python/gbinder-1.3.0
 	net-dns/dnsmasq
 	net-firewall/iptables
 	sys-apps/dbus
 	sys-apps/iproute2
 	sys-apps/kmod
-	$(python_gen_cond_dep '
-		dev-python/dbus-python[${PYTHON_USEDEP}]
-		>=dev-python/gbinder-1.3.0[${PYTHON_USEDEP}]
-	')
 "
 
 src_prepare() {

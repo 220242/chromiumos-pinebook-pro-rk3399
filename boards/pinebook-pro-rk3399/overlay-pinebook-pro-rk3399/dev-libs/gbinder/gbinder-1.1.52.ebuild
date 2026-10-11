@@ -1,9 +1,10 @@
 # Copyright 2022-2026 Gentoo Authors
 # Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
 # Distributed under the terms of the GNU General Public License v2
-# Adapted from ::guru dev-libs/gbinder (EAPI 8, ChromeOS keywords, no tools).
+# Adapted from ::guru dev-libs/gbinder: EAPI 7 (the SDK's Portage has no
+# EAPI 8), ChromeOS keywords, no tools.
 
-EAPI=8
+EAPI=7
 
 inherit toolchain-funcs
 

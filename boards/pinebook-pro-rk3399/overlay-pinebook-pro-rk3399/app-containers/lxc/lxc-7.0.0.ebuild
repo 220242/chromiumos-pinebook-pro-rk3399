@@ -4,9 +4,10 @@
 # Adapted from ::gentoo app-containers/lxc for Waydroid on ChromiumOS: only
 # what Waydroid uses (the lxc-* tools and liblxc), no systemd/OpenRC files, no
 # AppArmor, seccomp or SELinux support (Waydroid's config is adjusted to match,
-# see app-containers/waydroid), no setuid lxc-user-nic.
+# see app-containers/waydroid), no setuid lxc-user-nic. EAPI 7: the SDK's
+# Portage has no EAPI 8.
 
-EAPI=8
+EAPI=7
 
 inherit meson
 

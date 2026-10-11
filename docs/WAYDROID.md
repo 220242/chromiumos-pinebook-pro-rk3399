@@ -175,6 +175,24 @@ camera, and clipboard sharing.
 ## Building
 
 The kernel config changed, so a full build is needed (`build_packages`, then
-`build_image`); the quick package patch does not cover the kernel. To build an
-image without Waydroid, remove the `USE="${USE} waydroid"` line from
-`profiles/base/make.defaults`; the kernel options do no harm without it.
+`build_image`); the quick package patch does not cover the kernel. Portage
+does not rebuild the kernel when only `kernel/pinebook-pro.config` changes (the
+kernel's ebuild stays the same), so rebuild it explicitly:
+
+```bash
+emerge-pinebook-pro-rk3399 sys-kernel/chromeos-kernel-6_6
+```
+
+To check that every package Android needs can be installed, in a minute and
+without building anything:
+
+```bash
+emerge-pinebook-pro-rk3399 -pv chromeos-base/pinebook-waydroid
+```
+
+The ebuilds are EAPI 7: the SDK's Portage has no EAPI 8. If one of them cannot
+be installed, the build stops (`profiles/base/package.mask` keeps
+arm64-generic's `virtual/chromeos-bsp` from standing in for the board's).
+
+To build an image without Waydroid, remove the `USE="${USE} waydroid"` line
+from `profiles/base/make.defaults`; the kernel options do no harm without it.
