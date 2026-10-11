@@ -38,11 +38,15 @@ log_to() { # log_to MOUNTPOINT: keep writing this boot's logs there
 	ls -d "${logs}"/boot-* | head -n -10 | xargs -r rm -rf
 	cat /proc/cmdline > "${out}/cmdline.txt"
 	sync -f "${logs}/last-boot"
+	# Upstart stops this job when a reboot starts: save one last snapshot.
+	trap 'collect "${out}"; sync -f "${out}/dmesg.txt"; exit 0' TERM
 	start=$(date +%s)
 	while :; do
 		collect "${out}"
 		sync -f "${out}/dmesg.txt"
-		if (( $(date +%s) - start < 300 )); then sleep 1; else sleep 30; fi
+		# sleep in the background and wait, so a TERM is handled at once.
+		if (( $(date +%s) - start < 300 )); then sleep 1 & else sleep 30 & fi
+		wait $!
 	done
 }
 
@@ -68,6 +72,10 @@ if [[ -n ${disk} ]]; then
 	mount_and_log "${esp}" esp
 fi
 
+# On TERM (a reboot is starting) pass it on, so every copy saves a last
+# snapshot, and wait for them.
+trap 'kill -TERM $(jobs -p) 2>/dev/null; wait; exit 0' TERM
+
 # FAT USB drives, including ones plugged in later during the first minutes.
 start=$(date +%s)
 while (( $(date +%s) - start < 300 )); do
@@ -81,7 +89,8 @@ while (( $(date +%s) - start < 300 )); do
 		echo w > /proc/sysrq-trigger 2>/dev/null
 		touch /run/pinebook-boot-logs/.sysrq-w
 	fi
-	sleep 2
+	sleep 2 & wait $!
 done
 echo w > /proc/sysrq-trigger 2>/dev/null
-wait
+# Keep the job running so a reboot can still stop it with TERM.
+while :; do sleep 3600 & wait $!; done

@@ -18,5 +18,7 @@ load ${devtype} ${devnum}:${cros_part} ${fdt_addr_r} /boot/pinebook-pro/rk3399-p
 
 # Bring-up: a task stuck for 30 s is reported (with its stack) instead of
 # panicking and rebooting after 120 s, so pinebook-boot-logs can save it.
-setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30"
+# printk.devkmsg=on: keep every message programs write to the kernel log;
+# by default most of chromeos_startup's were dropped by the rate limit.
+setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30 printk.devkmsg=on"
 booti ${kernel_addr_r} - ${fdt_addr_r}
