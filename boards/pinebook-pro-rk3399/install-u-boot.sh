@@ -7,6 +7,8 @@
 #    the card, so on a laptop that already has a boot loader there (Manjaro's
 #    U-Boot, Tow-Boot) that one runs instead of ours; its distro boot only
 #    looks at the bootable partition. boot.scr loads the kernel from ROOT-A.
+#    That partition also gets the Basic data type, so Windows can read the
+#    boot logs written to it.
 # Run it on the image file before writing the image to a microSD card.
 #
 # Usage: install-u-boot.sh IMAGE [LOADER [BOOT_SCR]]
@@ -28,7 +30,7 @@ OFFSET_SECTORS=64
 
 die() { echo "install-u-boot: $*" >&2; exit 1; }
 
-[[ $# -ge 1 && $# -le 3 ]] || { sed -n '2,22s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[[ $# -ge 1 && $# -le 3 ]] || { sed -n '2,24s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 
 image=$1
 loader=${2:-}
@@ -78,4 +80,9 @@ esp_start=$(sfdisk -d "${image}" | sed -n 's/^[^ ]*[^0-9]12 *: start= *\([0-9]*\
 [[ ${esp_start} =~ ^[0-9]+$ ]] || die "no partition 12 (EFI-SYSTEM) in ${image}"
 echo "Copying ${boot_scr} to /boot.scr on partition 12 (EFI-SYSTEM)"
 MTOOLS_SKIP_CHECK=1 mcopy -o -i "${image}@@$(( esp_start * SECTOR ))" "${boot_scr}" ::/boot.scr
+# Basic data type instead of EFI System, so Windows mounts the partition and
+# the boot logs that pinebook-boot-logs writes to logs/ can be read there.
+# The legacy-BIOS-bootable attribute that distro boot looks for stays.
+echo "Setting partition 12 (EFI-SYSTEM) type to Basic data"
+sfdisk --quiet --part-type "${image}" 12 EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
 echo "Done. Write the image to the microSD card as usual."
