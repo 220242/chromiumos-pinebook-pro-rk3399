@@ -2,49 +2,86 @@
 # Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
 # Distributed under the terms of the GNU General Public License v2
 #
-# Bring-up aid: copy this boot's logs to logs/boot-NNNN/ on the EFI-SYSTEM
-# partition (FAT, partition 12 of the boot disk), which Windows can read.
-# Runs from the start of boot until shutdown, every second for the first two
-# minutes, then every 30 seconds. Keeps the last 10 boots.
+# Bring-up aid: copy this boot's logs to logs/boot-NNNN/ on FAT volumes
+# Windows can read:
+#  - the EFI-SYSTEM partition (partition 12) of the boot disk;
+#  - every FAT-formatted USB drive plugged in (any /dev/sd* partition), so
+#    logs survive even when the boot disk itself stops responding.
+# Each volume is written by its own loop, and each loop syncs only its own
+# file system, so a stuck disk cannot stop the other copies. Every second for
+# the first five minutes, then every 30 seconds. Keeps the last 10 boots.
 
-mnt=/run/pinebook-boot-logs
-
-disk=$(rootdev -s -d 2>/dev/null) || exit 0
-case ${disk} in
-*[0-9]) esp=${disk}p12 ;;
-*) esp=${disk}12 ;;
-esac
-for _ in $(seq 50); do
-	[[ -b ${esp} ]] && break
-	sleep 0.1
-done
-
-mkdir -p "${mnt}"
-mount -t vfat -o rw,noatime,flush,umask=022 "${esp}" "${mnt}" || exit 0
-
-logs=${mnt}/logs
-mkdir -p "${logs}"
-n=$(( $(cat "${logs}/last-boot" 2>/dev/null || echo 0) + 1 ))
-echo "${n}" > "${logs}/last-boot"
-out=$(printf '%s/boot-%04d' "${logs}" "${n}")
-mkdir -p "${out}"
-ls -d "${logs}"/boot-* | head -n -10 | xargs -r rm -rf
-cat /proc/cmdline > "${out}/cmdline.txt"
-sync
-
-start=$(date +%s)
-while :; do
-	dmesg > "${out}/dmesg.txt" 2>&1
-	{ uptime; echo; initctl list; echo; mount; } > "${out}/state.txt" 2>&1
+collect() { # collect DIR: snapshot the logs into DIR
+	local out=$1 f name
+	dmesg > "${out}/dmesg.txt.new" 2>&1 && mv -f "${out}/dmesg.txt.new" "${out}/dmesg.txt"
+	{ uptime; echo; initctl list; echo; mount; echo; ps -eo pid,stat,wchan:32,etime,args; } \
+		> "${out}/state.txt" 2>&1
 	for f in /run/*.log /run/chromeos_startup* /var/log/messages \
 		/var/log/boot.log /var/log/ui/ui.LATEST /var/log/chrome/chrome \
 		/var/log/power_manager/powerd.LATEST /var/log/tpm*.log \
 		/mnt/stateful_partition/unencrypted/clobber*.log \
-		/mnt/stateful_partition/unencrypted/preserve/*.log; do
+		/mnt/stateful_partition/unencrypted/preserve/*.log \
+		/sys/fs/pstore/*; do
 		[[ -f ${f} ]] || continue
 		name=${f#/}
 		cp -f "${f}" "${out}/${name//\//_}.txt" 2>/dev/null
 	done
-	sync
-	if (( $(date +%s) - start < 120 )); then sleep 1; else sleep 30; fi
+}
+
+log_to() { # log_to MOUNTPOINT: keep writing this boot's logs there
+	local logs=$1/logs n out start
+	mkdir -p "${logs}" || return
+	n=$(( $(cat "${logs}/last-boot" 2>/dev/null || echo 0) + 1 ))
+	echo "${n}" > "${logs}/last-boot"
+	out=$(printf '%s/boot-%04d' "${logs}" "${n}")
+	mkdir -p "${out}"
+	ls -d "${logs}"/boot-* | head -n -10 | xargs -r rm -rf
+	cat /proc/cmdline > "${out}/cmdline.txt"
+	sync -f "${logs}/last-boot"
+	start=$(date +%s)
+	while :; do
+		collect "${out}"
+		sync -f "${out}/dmesg.txt"
+		if (( $(date +%s) - start < 300 )); then sleep 1; else sleep 30; fi
+	done
+}
+
+mount_and_log() { # mount_and_log DEVICE NAME
+	local mnt=/run/pinebook-boot-logs/$2
+	mkdir -p "${mnt}"
+	mountpoint -q "${mnt}" && return
+	mount -t vfat -o rw,noatime,umask=022 "$1" "${mnt}" || return
+	log_to "${mnt}" &
+}
+
+# The boot disk's EFI-SYSTEM partition.
+disk=$(rootdev -s -d 2>/dev/null)
+if [[ -n ${disk} ]]; then
+	case ${disk} in
+	*[0-9]) esp=${disk}p12 ;;
+	*) esp=${disk}12 ;;
+	esac
+	for _ in $(seq 50); do
+		[[ -b ${esp} ]] && break
+		sleep 0.1
+	done
+	mount_and_log "${esp}" esp
+fi
+
+# FAT USB drives, including ones plugged in later during the first minutes.
+start=$(date +%s)
+while (( $(date +%s) - start < 300 )); do
+	for dev in /dev/sd[a-z] /dev/sd[a-z][0-9]*; do
+		[[ -b ${dev} ]] || continue
+		[[ $(blkid -o value -s TYPE "${dev}" 2>/dev/null) == vfat ]] || continue
+		mount_and_log "${dev}" "usb-${dev##*/}"
+	done
+	# Stack traces of blocked tasks, for hangs (hung_task_panic=0 is set).
+	if (( $(date +%s) - start >= 60 )) && [[ ! -e /run/pinebook-boot-logs/.sysrq-w ]]; then
+		echo w > /proc/sysrq-trigger 2>/dev/null
+		touch /run/pinebook-boot-logs/.sysrq-w
+	fi
+	sleep 2
 done
+echo w > /proc/sysrq-trigger 2>/dev/null
+wait

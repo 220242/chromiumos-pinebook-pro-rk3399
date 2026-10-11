@@ -16,5 +16,7 @@ part uuid ${devtype} ${devnum}:${cros_part} cros_root_uuid
 load ${devtype} ${devnum}:${cros_part} ${kernel_addr_r} /boot/pinebook-pro/Image
 load ${devtype} ${devnum}:${cros_part} ${fdt_addr_r} /boot/pinebook-pro/rk3399-pinebook-pro.dtb
 
-setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7"
+# Bring-up: a task stuck for 30 s is reported (with its stack) instead of
+# panicking and rebooting after 120 s, so pinebook-boot-logs can save it.
+setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30"
 booti ${kernel_addr_r} - ${fdt_addr_r}

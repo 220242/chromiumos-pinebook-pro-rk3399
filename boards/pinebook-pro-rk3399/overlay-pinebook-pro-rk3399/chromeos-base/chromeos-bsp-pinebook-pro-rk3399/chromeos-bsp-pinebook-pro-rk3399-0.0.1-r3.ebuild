@@ -33,8 +33,9 @@ src_install() {
 	insinto /boot/pinebook-pro
 	doins boot.scr
 
-	# Bring-up: every boot's logs go to logs/ on EFI-SYSTEM, readable from
-	# Windows (install-u-boot.sh gives that partition the Basic data type).
+	# Bring-up: every boot's logs go to logs/ on EFI-SYSTEM and FAT USB drives,
+	# readable from Windows (install-u-boot.sh gives EFI-SYSTEM the Basic data
+	# type).
 	dosbin "${FILESDIR}/pinebook-boot-logs"
 	insinto /etc/init
 	doins "${FILESDIR}/pinebook-boot-logs.conf"
