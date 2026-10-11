@@ -10,6 +10,11 @@ LICENSE="metapackage"
 SLOT="0"
 KEYWORDS="*"
 
+IUSE="waydroid"
+
 # Version 3 so it wins over arm64-generic's chromeos-bsp-2-r1.
-RDEPEND="chromeos-base/chromeos-bsp-pinebook-pro-rk3399"
+RDEPEND="
+	chromeos-base/chromeos-bsp-pinebook-pro-rk3399
+	waydroid? ( chromeos-base/pinebook-waydroid )
+"
 DEPEND="${RDEPEND}"

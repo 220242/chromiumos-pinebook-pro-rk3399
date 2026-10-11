@@ -34,3 +34,8 @@ LINUX_FIRMWARE="-iwlwifi-all rockchip-dptx"
 # cannot load the TPM system key and reboots on every boot (boot loop seen on
 # the hardware); keep /var and /home/chronos on the plain stateful partition.
 USE="${USE} -encrypted_stateful"
+
+# Android apps through Waydroid: virtual/chromeos-bsp pulls in
+# chromeos-base/pinebook-waydroid (see docs/WAYDROID.md). The kernel options
+# it needs are in kernel/pinebook-pro.config either way.
+USE="${USE} waydroid"

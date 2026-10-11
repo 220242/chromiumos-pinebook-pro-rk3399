@@ -1,0 +1,1321 @@
+#!/usr/bin/env python3
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+
+"""Android apps on the Pinebook Pro's ChromiumOS, through Waydroid.
+
+`pinebook-android daemon` is the root service behind http://android.localhost
+and the `android` command. The upstart job pinebook-android starts it when a
+user logs in. It does everything Waydroid needs on ChromiumOS:
+
+setup   On first use, adds an ANDROID-DATA partition (ext4) in the free space
+        after the ChromiumOS partitions of the card the system booted from and
+        mounts it at /var/lib/waydroid, Waydroid's work directory. Android's
+        system images and its /data live there: the stateful partition is
+        small and mounted noexec. Existing partitions are not changed; only a
+        GPT entry is added and the backup GPT moves to the end of the card.
+        If the card was reflashed with the same layout, the partition's file
+        system is found again and kept. The eMMC is never touched.
+        Then downloads Android (LineageOS) with `waydroid init`.
+start   Starts Waydroid's container service (root), a private D-Bus session
+        bus and `waydroid session start` as chronos, drawing on Chrome's
+        Wayland server (/run/chrome/wayland-0); shows Android's window when it
+        is ready.
+
+Android's session data is kept on the ANDROID-DATA partition, not in the
+user's home, so it is shared by everyone who logs in on this machine.
+
+The HTTP API listens on localhost only. POST requests need the
+X-Android-Launcher header (which a page from another origin cannot send
+without a CORS preflight, and this server answers none) and a matching Origin,
+and every request needs a localhost Host header (no DNS rebinding).
+"""
+
+import argparse
+import collections
+import configparser
+import ctypes
+import fcntl
+import glob
+import hashlib
+import http.server
+import json
+import logging
+import logging.handlers
+import os
+import pwd
+import re
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import uuid
+import zlib
+
+WAYDROID = "/usr/bin/waydroid"
+WORK = "/var/lib/waydroid"
+USER = "chronos"
+USER_HOME = WORK + "/user"
+XDG_DATA_HOME = USER_HOME + "/share"
+WAYDROID_DATA = XDG_DATA_HOME + "/waydroid/data"
+APPS_DIR = XDG_DATA_HOME + "/applications"
+ICONS_DIR = WAYDROID_DATA + "/icons"
+INCOMING = USER_HOME + "/incoming"
+RUN = "/run/pinebook-android"
+# The session bus's dbus-daemon runs as chronos, so its socket gets a
+# directory of its own; the pid file stays root's.
+SESSION_BUS_DIR = RUN + "/bus"
+SESSION_BUS = SESSION_BUS_DIR + "/socket"
+SESSION_BUS_PID = RUN + "/session-bus.pid"
+PULSE_DIR = RUN + "/pulse"
+SHARE = "/usr/share/pinebook-android"
+LOG_FILE = "/var/log/pinebook-android.log"
+# A copy in /run, which pinebook-boot-logs saves to the card's FAT partition
+# (logs/boot-NNNN/run_pinebook-android.log.txt), readable from Windows.
+RUN_LOG_FILE = "/run/pinebook-android.log"
+WAYLAND_DIR = "/run/chrome"
+WAYLAND_DISPLAY = "wayland-0"
+STATEFUL = "/mnt/stateful_partition"
+WAYDROID_ICON = "/usr/share/icons/hicolor/512x512/apps/waydroid.png"
+WAYDROID_CONFIGS = "/usr/lib/waydroid/data/configs"
+# Which Waydroid's container configs ANDROID-DATA has (see configure_waydroid).
+CONFIGS_STAMP = WORK + "/.pinebook-android-configs"
+
+PART_LABEL = "ANDROID-DATA"
+# "Linux filesystem data"
+PART_TYPE = uuid.UUID("0fc63daf-8483-4772-8e79-3d69d8477de4")
+# Partitions 1-12 are ChromiumOS's; the new one gets the first free slot
+# after them.
+FIRST_FREE_SLOT = 12
+MIN_FREE = 4 << 30
+ALIGN = 1 << 20
+
+PORT = 80
+HOSTS = ("android.localhost", "localhost", "127.0.0.1", "[::1]")
+API_HEADER = "X-Android-Launcher"
+MAX_APK = 4 << 30
+
+READY_RE = re.compile(r"Android with user \d+ is ready")
+PROGRESS_RE = re.compile(r"\[Downloading\]\s+([\d.]+) MB/([\d.]+) MB")
+
+log = logging.getLogger("pinebook-android")
+recent = collections.deque(maxlen=500)
+
+
+class RecentHandler(logging.Handler):
+    """Keeps the latest log lines for the page's log view."""
+
+    def emit(self, record):
+        recent.append(self.format(record))
+
+
+def setup_logging(to_file):
+    fmt = logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
+    handlers = [logging.StreamHandler(sys.stderr), RecentHandler()]
+    if to_file:
+        for path in (LOG_FILE, RUN_LOG_FILE):
+            try:
+                handlers.append(logging.handlers.RotatingFileHandler(
+                    path, maxBytes=1 << 20, backupCount=1))
+            except OSError as e:
+                print(f"pinebook-android: no log file {path}: {e}", file=sys.stderr)
+    for h in handlers:
+        h.setFormatter(fmt)
+        log.addHandler(h)
+    log.setLevel(logging.INFO)
+
+
+class Failure(Exception):
+    """An error to show on the page: an id the page translates, and details."""
+
+    def __init__(self, code, detail=""):
+        super().__init__(f"{code}: {detail}" if detail else code)
+        self.code = code
+        self.detail = detail
+
+
+# ---------------------------------------------------------------------------
+# Disks and the GPT
+
+def read_file(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def stateful_device():
+    """The block device mounted at /mnt/stateful_partition, e.g. mmcblk1p1."""
+    with open("/proc/self/mountinfo") as f:
+        for line in f:
+            fields = line.split()
+            if len(fields) > 9 and fields[4] == STATEFUL:
+                source = fields[fields.index("-") + 2]
+                if source.startswith("/dev/"):
+                    return os.path.basename(os.path.realpath(source))
+    raise Failure("no_disk", f"nothing is mounted at {STATEFUL}")
+
+
+def boot_disk():
+    """The disk the system runs from, e.g. mmcblk1, refusing the eMMC."""
+    part = stateful_device()
+    sys_part = os.path.realpath(f"/sys/class/block/{part}")
+    if not os.path.exists(sys_part + "/partition"):
+        raise Failure("no_disk", f"{part} is not a partition")
+    disk = os.path.basename(os.path.dirname(sys_part))
+    # The Pinebook Pro's eMMC (MMC, not SD) holds the owner's other system.
+    if read_file(f"/sys/block/{disk}/device/type") == "MMC":
+        raise Failure("emmc", f"/dev/{disk} is the eMMC")
+    return disk
+
+
+def disk_partitions(disk):
+    """{number: name} of the partitions the kernel knows on disk."""
+    parts = {}
+    for path in glob.glob(f"/sys/class/block/{disk}/*/partition"):
+        parts[int(read_file(path))] = os.path.basename(os.path.dirname(path))
+    return parts
+
+
+GPT_HEADER = struct.Struct("<8s4sII4xQQQQ16sQIII")
+GPT_ENTRY = struct.Struct("<16s16sQQQ72s")
+
+
+class GptError(Exception):
+    pass
+
+
+def crc32(data):
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def pread(fd, size, offset):
+    data = os.pread(fd, size, offset)
+    if len(data) != size:
+        raise GptError(f"short read at byte {offset}")
+    return data
+
+
+def pwrite(fd, data, offset):
+    if os.pwrite(fd, data, offset) != len(data):
+        raise GptError(f"short write at byte {offset}")
+
+
+class Gpt:
+    """The primary GPT of a disk or disk image, checked against its CRCs."""
+
+    def __init__(self, fd, sectors, sector_size=512):
+        self.fd = fd
+        self.sectors = sectors
+        self.ss = sector_size
+        raw = pread(fd, sector_size, sector_size)
+        (sig, self.revision, self.header_size, header_crc, self.my_lba,
+         self.alternate_lba, self.first_usable, self.last_usable,
+         self.disk_guid, self.entries_lba, self.num_entries, self.entry_size,
+         entries_crc) = GPT_HEADER.unpack_from(raw)
+        if sig != b"EFI PART":
+            raise GptError("no GPT on the disk")
+        if not GPT_HEADER.size <= self.header_size <= sector_size:
+            raise GptError(f"odd GPT header size {self.header_size}")
+        check = bytearray(raw[:self.header_size])
+        check[16:20] = bytes(4)
+        if crc32(check) != header_crc or self.my_lba != 1:
+            raise GptError("the primary GPT header is damaged")
+        if self.entry_size < GPT_ENTRY.size or self.entry_size % 8:
+            raise GptError(f"odd GPT entry size {self.entry_size}")
+        self.header_raw = raw
+        self.entries = bytearray(pread(
+            fd, self.num_entries * self.entry_size, self.entries_lba * sector_size))
+        if crc32(self.entries) != entries_crc:
+            raise GptError("the GPT partition entries are damaged")
+        self.entry_sectors = -(-len(self.entries) // sector_size)
+        if not (self.entries_lba + self.entry_sectors <= self.first_usable
+                and self.alternate_lba < sectors):
+            raise GptError("the GPT does not fit the disk")
+
+    def entry(self, index):
+        start = index * self.entry_size
+        ptype, puuid, first, last, attrs, name = GPT_ENTRY.unpack_from(
+            self.entries, start)
+        return {
+            "number": index + 1,
+            "type": uuid.UUID(bytes_le=ptype),
+            "uuid": uuid.UUID(bytes_le=puuid),
+            "first": first,
+            "last": last,
+            "name": name.decode("utf-16-le", "replace").split("\0")[0],
+            "used": ptype != bytes(16),
+        }
+
+    def used(self):
+        return [e for e in map(self.entry, range(self.num_entries)) if e["used"]]
+
+    def find(self, name):
+        for e in self.used():
+            if e["name"] == name:
+                return e
+        return None
+
+    def plan(self):
+        """Where a partition filling the free end of the disk would go."""
+        used = self.used()
+        free_slots = [i for i in range(FIRST_FREE_SLOT, self.num_entries)
+                      if not self.entry(i)["used"]]
+        if not free_slots:
+            raise GptError("no free slot in the GPT")
+        align = max(ALIGN // self.ss, 1)
+        parts_end = max([e["last"] for e in used] + [self.first_usable - 1])
+        # A ChromiumOS image written to a bigger card keeps its backup GPT at
+        # the end of the image. Start after it: writing an image of the same
+        # size to the card again then leaves this partition (and Android's
+        # data) alone, and setup finds it again.
+        end = parts_end
+        if self.alternate_lba < self.sectors - 1:
+            end = max(end, self.alternate_lba)
+        backup_lba = self.sectors - 1
+        backup_entries_lba = backup_lba - self.entry_sectors
+        last_usable = backup_entries_lba - 1
+        first = -(-(end + 1) // align) * align
+        last = (last_usable + 1) // align * align - 1
+        return {
+            "index": free_slots[0],
+            "number": free_slots[0] + 1,
+            "first": first,
+            "last": last,
+            "bytes": max(last - first + 1, 0) * self.ss,
+            "parts_end": parts_end,
+            "used_end": end,
+            "backup_lba": backup_lba,
+            "backup_entries_lba": backup_entries_lba,
+            "last_usable": last_usable,
+        }
+
+    def _header(self, my_lba, alternate_lba, last_usable, entries_lba, entries_crc):
+        raw = bytearray(self.header_raw)
+        GPT_HEADER.pack_into(
+            raw, 0, b"EFI PART", self.revision, self.header_size, 0, my_lba,
+            alternate_lba, self.first_usable, last_usable, self.disk_guid,
+            entries_lba, self.num_entries, self.entry_size, entries_crc)
+        struct.pack_into("<I", raw, 16, crc32(raw[:self.header_size]))
+        return bytes(raw)
+
+    def add(self, plan, name, part_uuid=None):
+        """Writes the new entry and moves the backup GPT to the end of the disk."""
+        if plan["last"] < plan["first"]:
+            raise GptError("no free space at the end of the disk")
+        if plan["first"] <= plan["used_end"] or plan["last"] >= plan["backup_entries_lba"]:
+            raise GptError("the new partition would overlap")
+        old_backup = self.alternate_lba
+        if old_backup > plan["backup_lba"]:
+            raise GptError("the backup GPT is beyond the end of the disk")
+        entry = GPT_ENTRY.pack(
+            PART_TYPE.bytes_le, (part_uuid or uuid.uuid4()).bytes_le,
+            plan["first"], plan["last"], 0,
+            name.encode("utf-16-le")[:72].ljust(72, b"\0"))
+        start = plan["index"] * self.entry_size
+        self.entries[start:start + len(entry)] = entry
+        entries_crc = crc32(self.entries)
+        ss = self.ss
+        # The backup goes first, into space nothing uses yet: until the
+        # primary is rewritten the disk still describes the old layout, and a
+        # torn primary write leaves a valid backup at the end of the disk,
+        # where readers look for it.
+        pwrite(self.fd, bytes(self.entries), plan["backup_entries_lba"] * ss)
+        pwrite(self.fd, self._header(plan["backup_lba"], 1, plan["last_usable"],
+                                     plan["backup_entries_lba"], entries_crc),
+               plan["backup_lba"] * ss)
+        os.fsync(self.fd)
+        pwrite(self.fd, bytes(self.entries), self.entries_lba * ss)
+        pwrite(self.fd, self._header(1, plan["backup_lba"], plan["last_usable"],
+                                     self.entries_lba, entries_crc), ss)
+        os.fsync(self.fd)
+        # A protective MBR (one 0xEE entry and nothing else) covers the disk.
+        mbr = bytearray(pread(self.fd, 512, 0))
+        if (mbr[510:512] == b"\x55\xaa" and mbr[446 + 4] == 0xEE
+                and mbr[462:510] == bytes(48)):
+            struct.pack_into("<I", mbr, 446 + 12, min(self.sectors - 1, 0xFFFFFFFF))
+            pwrite(self.fd, bytes(mbr), 0)
+        # The image's old backup header now sits before the new partition.
+        if plan["parts_end"] < old_backup < plan["first"]:
+            pwrite(self.fd, bytes(ss), old_backup * ss)
+        os.fsync(self.fd)
+        self.alternate_lba = plan["backup_lba"]
+        self.last_usable = plan["last_usable"]
+        self.header_raw = pread(self.fd, ss, ss)
+
+
+class BlkpgPartition(ctypes.Structure):
+    _fields_ = [("start", ctypes.c_longlong), ("length", ctypes.c_longlong),
+                ("pno", ctypes.c_int), ("devname", ctypes.c_char * 64),
+                ("volname", ctypes.c_char * 64)]
+
+
+class BlkpgIoctlArg(ctypes.Structure):
+    _fields_ = [("op", ctypes.c_int), ("flags", ctypes.c_int),
+                ("datalen", ctypes.c_int), ("data", ctypes.c_void_p)]
+
+
+BLKPG = 0x1269
+BLKPG_ADD_PARTITION = 1
+
+
+def kernel_add_partition(fd, number, first, last, ss):
+    """Tells the kernel about a new partition on a disk that is in use."""
+    part = BlkpgPartition(start=first * ss, length=(last - first + 1) * ss,
+                          pno=number)
+    arg = BlkpgIoctlArg(op=BLKPG_ADD_PARTITION, datalen=ctypes.sizeof(part),
+                        data=ctypes.addressof(part))
+    fcntl.ioctl(fd, BLKPG, arg)
+
+
+def ext4_label(device_path, offset=0):
+    """The label of an ext2/3/4 file system at offset, or None."""
+    try:
+        with open(device_path, "rb") as f:
+            f.seek(offset + 1024)
+            sb = f.read(136)
+    except OSError:
+        return None
+    if len(sb) < 136 or struct.unpack_from("<H", sb, 56)[0] != 0xEF53:
+        return None
+    return sb[120:136].split(b"\0")[0].decode("utf-8", "replace")
+
+
+def run(cmd, check=True, timeout=None, **kw):
+    log.info("$ %s", " ".join(cmd))
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, timeout=timeout, **kw)
+    out = p.stdout.strip()
+    if out:
+        for line in out.splitlines()[-30:]:
+            log.info("  %s", line)
+    if check and p.returncode != 0:
+        raise Failure("command_failed",
+                      f"{' '.join(cmd)} exited with {p.returncode}: {out[-500:]}")
+    return p
+
+
+def open_gpt(disk, write=False):
+    """(fd, Gpt, sector size) of a disk; the caller closes fd."""
+    # /sys/block/*/size counts 512-byte sectors whatever the sector size.
+    ss = int(read_file(f"/sys/block/{disk}/queue/logical_block_size", "512"))
+    sectors = int(read_file(f"/sys/block/{disk}/size")) * 512 // ss
+    fd = os.open(f"/dev/{disk}", (os.O_RDWR if write else os.O_RDONLY) | os.O_CLOEXEC)
+    try:
+        return fd, Gpt(fd, sectors, ss), ss
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def partition_info():
+    """What the setup page shows: the card, and the space Android would get."""
+    info = {"disk": None, "card": None, "free_bytes": 0, "min_free": MIN_FREE,
+            "has_partition": False, "has_data": False}
+    try:
+        disk = boot_disk()
+        info["disk"] = disk
+        info["card"] = read_file(f"/sys/block/{disk}/device/type") == "SD"
+        fd, gpt, ss = open_gpt(disk)
+        try:
+            if gpt.find(PART_LABEL):
+                info["has_partition"] = True
+            else:
+                plan = gpt.plan()
+                info["free_bytes"] = plan["bytes"]
+                # Android's file system from before the card was reflashed
+                # with the same image layout: setup finds it again.
+                info["has_data"] = ext4_label(f"/dev/{disk}", plan["first"] * ss) == PART_LABEL
+        finally:
+            os.close(fd)
+    except Failure as e:
+        info["error"] = {"code": e.code, "detail": e.detail}
+    except GptError as e:
+        info["error"] = {"code": "gpt", "detail": str(e)}
+    except (OSError, ValueError) as e:
+        info["error"] = {"code": "no_disk", "detail": str(e)}
+    return info
+
+
+def data_partition(step=None, create=False):
+    """The /dev path of ANDROID-DATA on the boot disk, or None if there is
+    none and create is False. Adds it to the GPT if asked, and tells the
+    kernel about it if it is not in the kernel's partition table yet (until
+    the next boot, a partition added while the disk is in use is not)."""
+    disk = boot_disk()
+    try:
+        fd, gpt, ss = open_gpt(disk, write=create)
+    except GptError as e:
+        raise Failure("gpt", str(e))
+    except (OSError, ValueError) as e:
+        raise Failure("no_disk", f"/dev/{disk}: {e}")
+    try:
+        entry = gpt.find(PART_LABEL)
+        if entry is None:
+            if not create:
+                return None
+            plan = gpt.plan()
+            if plan["bytes"] < MIN_FREE:
+                raise Failure("no_space", f"{plan['bytes'] / 1e9:.1f} GB free on /dev/{disk}")
+            step("partition")
+            log.info("Adding partition %d (%s) on /dev/%s: sectors %d-%d, %.1f GB",
+                     plan["number"], PART_LABEL, disk, plan["first"], plan["last"],
+                     plan["bytes"] / 1e9)
+            gpt.add(plan, PART_LABEL)
+            Gpt(fd, gpt.sectors, ss)  # re-read: the CRCs must check out
+            entry = gpt.find(PART_LABEL)
+        if entry["number"] not in disk_partitions(disk):
+            log.info("Adding partition %d to the kernel's table of /dev/%s",
+                     entry["number"], disk)
+            kernel_add_partition(fd, entry["number"], entry["first"], entry["last"], ss)
+    except GptError as e:
+        raise Failure("gpt", str(e))
+    except OSError as e:
+        raise Failure("gpt", f"/dev/{disk}: {e}")
+    finally:
+        os.close(fd)
+    for _ in range(50):
+        name = disk_partitions(disk).get(entry["number"])
+        if name and os.path.exists("/dev/" + name):
+            return "/dev/" + name
+        time.sleep(0.1)
+    raise Failure("gpt", f"partition {entry['number']} of /dev/{disk} did not appear")
+
+
+def create_data_partition(step):
+    dev = data_partition(step, create=True)
+    if ext4_label(dev) == PART_LABEL:
+        log.info("%s already holds the %s file system; keeping it", dev, PART_LABEL)
+    else:
+        step("format")
+        run(["mkfs.ext4", "-F", "-q", "-L", PART_LABEL, "-m", "0",
+             "-E", "lazy_itable_init=1,lazy_journal_init=1", dev], timeout=600)
+    return dev
+
+
+def is_mounted(path):
+    with open("/proc/self/mountinfo") as f:
+        return any(line.split()[4] == path for line in f)
+
+
+def mount_data():
+    """Mounts ANDROID-DATA at /var/lib/waydroid. False if there is none
+    (or it was never formatted)."""
+    if is_mounted(WORK):
+        return True
+    dev = data_partition()
+    if not dev or ext4_label(dev) != PART_LABEL:
+        return False
+    os.makedirs(WORK, 0o755, exist_ok=True)
+    if shutil.which("e2fsck"):
+        p = run(["e2fsck", "-p", dev], check=False, timeout=600)
+        if p.returncode >= 4:
+            raise Failure("fsck", f"e2fsck {dev} exited with {p.returncode}")
+    # A mount of its own: exec and symlinks work here, unlike on /var.
+    run(["mount", "-t", "ext4", "-o", "noatime", dev, WORK])
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Waydroid
+
+def chronos():
+    return pwd.getpwnam(USER)
+
+
+def session_env():
+    return {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": USER_HOME,
+        "LANG": "C.UTF-8",
+        "PYTHONUNBUFFERED": "1",
+        "XDG_DATA_HOME": XDG_DATA_HOME,
+        "XDG_RUNTIME_DIR": WAYLAND_DIR,
+        "WAYLAND_DISPLAY": WAYLAND_DISPLAY,
+        # ChromiumOS has no PulseAudio; Waydroid binds this file regardless.
+        "PULSE_RUNTIME_PATH": PULSE_DIR,
+        "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + SESSION_BUS,
+    }
+
+
+def root_env():
+    return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": "/root",
+            "LANG": "C.UTF-8", "PYTHONUNBUFFERED": "1"}
+
+
+def as_user(**kw):
+    pw = chronos()
+    return dict(user=pw.pw_uid, group=pw.pw_gid, extra_groups=[],
+                env=session_env(), cwd=USER_HOME, **kw)
+
+
+def run_user(cmd, timeout=120, check=True):
+    return run(cmd, check=check, timeout=timeout, **as_user())
+
+
+def waydroid_cfg():
+    cfg = configparser.ConfigParser()
+    cfg.read(WORK + "/waydroid.cfg")
+    return cfg
+
+
+def is_initialized():
+    """Whether `waydroid init` has both images. It records an image's date
+    once the whole image is in place, and resets it when it switches to
+    another one (adding Google Play), so a half-done download does not
+    count."""
+    cfg = waydroid_cfg()
+    return (os.path.isdir(WORK + "/rootfs")
+            and all(os.path.isfile(f"{WORK}/images/{i}.img")
+                    and cfg.get("waydroid", f"{i}_datetime", fallback="0") != "0"
+                    for i in ("system", "vendor")))
+
+
+def has_google_play():
+    """Whether the Android image is Waydroid's GAPPS one (Google Play)."""
+    return "/GAPPS." in waydroid_cfg().get("waydroid", "system_ota", fallback="")
+
+
+GSF_DB = "/data/data/com.google.android.gsf/databases/gservices.db"
+
+
+def android_id():
+    """The ID Google asks for to let Play run on a device it has not
+    certified (https://www.google.com/android/uncertified)."""
+    p = run([WAYDROID, "shell", "--", "sqlite3", GSF_DB,
+             "select value from main where name = 'android_id';"],
+            check=False, timeout=60, env=root_env(), cwd="/")
+    value = (p.stdout or "").strip().splitlines()
+    if p.returncode != 0 or not value or not value[-1].isdigit():
+        raise Failure("no_android_id", (p.stdout or "").strip()[-300:])
+    return value[-1]
+
+
+def gpu_render_node():
+    """The Panfrost (Mali-T860) render node; other render nodes, such as
+    ChromeOS's vgem, cannot run Android's graphics."""
+    for path in sorted(glob.glob("/sys/class/drm/renderD*")):
+        if "DRIVER=panfrost" in read_file(path + "/device/uevent").splitlines():
+            return "/dev/dri/" + os.path.basename(path)
+    return None
+
+
+def waydroid_configs():
+    """A hash of the installed Waydroid's container config templates."""
+    digest = hashlib.sha256()
+    for path in sorted(glob.glob(WAYDROID_CONFIGS + "/*")):
+        with open(path, "rb") as f:
+            digest.update(path.encode() + b"\0" + f.read())
+    return digest.hexdigest()
+
+
+def configure_waydroid():
+    """Board settings on top of `waydroid init`; regenerates the container
+    config when they change, or when the card has a newer image whose
+    Waydroid brings other container configs."""
+    path = WORK + "/waydroid.cfg"
+    cfg = configparser.ConfigParser()
+    cfg.read(path)
+    configs = waydroid_configs()
+    changed = read_file(CONFIGS_STAMP) != configs
+    node = gpu_render_node()
+    if node and cfg["waydroid"].get("drm_device") != node:
+        cfg["waydroid"]["drm_device"] = node
+        changed = True
+    if "properties" not in cfg:
+        cfg["properties"] = {}
+    # Mesa has no Vulkan driver for the Mali-T860 (Midgard); without this
+    # Waydroid would point Android at panvk.
+    if cfg["properties"].get("ro.hardware.vulkan") != "none":
+        cfg["properties"]["ro.hardware.vulkan"] = "none"
+        changed = True
+    if changed:
+        with open(path + ".new", "w") as f:
+            cfg.write(f)
+        os.replace(path + ".new", path)
+        run([WAYDROID, "upgrade", "--offline"], timeout=300, env=root_env())
+        write_file(CONFIGS_STAMP, configs)
+
+
+def read_desktop_file(path):
+    entry = {}
+    section = None
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("["):
+                section = line
+            elif section == "[Desktop Entry]" and "=" in line:
+                key, value = line.split("=", 1)
+                entry.setdefault(key.strip(), value.strip())
+    return entry
+
+
+PACKAGE_RE = re.compile(r"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$")
+
+
+def list_apps():
+    apps = []
+    for path in glob.glob(APPS_DIR + "/waydroid.*.desktop"):
+        package = os.path.basename(path)[len("waydroid."):-len(".desktop")]
+        if not PACKAGE_RE.match(package):
+            continue
+        try:
+            entry = read_desktop_file(path)
+        except OSError:
+            continue
+        apps.append({
+            "package": package,
+            "name": entry.get("Name", package),
+            "system": entry.get("NoDisplay", "").lower() == "true",
+            "icon": os.path.isfile(f"{ICONS_DIR}/{package}.png"),
+        })
+    return sorted(apps, key=lambda a: (a["system"], a["name"].lower()))
+
+
+def app_files():
+    """When each app's .desktop file last changed. Waydroid writes an app's
+    file when Android installs or updates the app, and every app's file when
+    Android starts."""
+    files = {}
+    for path in glob.glob(APPS_DIR + "/waydroid.*.desktop"):
+        try:
+            files[path] = os.stat(path).st_mtime_ns
+        except OSError:
+            pass
+    return files
+
+
+def tail(path, lines=200):
+    try:
+        with open(path, errors="replace") as f:
+            return f.readlines()[-lines:]
+    except OSError:
+        return []
+
+
+def write_file(path, data, mode=0o644):
+    with open(path + ".new", "w") as f:
+        f.write(data)
+    os.chmod(path + ".new", mode)
+    os.replace(path + ".new", path)
+
+
+class Android:
+    """Waydroid's processes and the state the page shows."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.busy = None        # "setup", "start", "stop" or "install"
+        self.step = None        # what the busy operation is doing now
+        self.progress = None    # [done, total] bytes of a download
+        self.error = None       # {"code", "detail"} of the last failure
+        self.notice = None      # {"code", "detail"} of the last success
+        self.container = None   # `waydroid container start` (root)
+        self.bus = None         # the session's dbus-daemon (chronos)
+        self.session = None     # `waydroid session start` (chronos)
+        self.ready = threading.Event()
+        self.session_output = collections.deque(maxlen=60)
+        self.stopping = False
+
+    # -- state ------------------------------------------------------------
+
+    def running(self):
+        """Whether Android is up, whatever operation runs."""
+        session = self.session
+        return bool(session and session.poll() is None and self.ready.is_set())
+
+    def state(self):
+        with self.lock:
+            busy = self.busy
+        if busy in ("setup", "start", "stop"):
+            return {"setup": "setting_up", "start": "starting", "stop": "stopping"}[busy]
+        if not is_mounted(WORK) or not is_initialized():
+            return "needs_setup"
+        if self.running():
+            return "running"
+        if busy or (self.session and self.session.poll() is None):
+            # Starting, also for an install while Android was stopped.
+            return "starting"
+        return "stopped"
+
+    def status(self):
+        state = self.state()
+        with self.lock:
+            out = {
+                "state": state,
+                "busy": self.busy,
+                "step": self.step,
+                "progress": self.progress,
+                "error": self.error,
+                "notice": self.notice,
+                "checks": checks(),
+            }
+        if state == "needs_setup" and not self.busy:
+            out["setup"] = partition_info()
+        if state in ("running", "stopped"):
+            out["apps"] = list_apps()
+            out["google_play"] = has_google_play()
+        return out
+
+    def set_step(self, step, progress=None):
+        with self.lock:
+            self.step = step
+            self.progress = progress
+        if progress is None:
+            log.info("== %s", step)
+
+    def begin(self, name):
+        with self.lock:
+            if self.busy:
+                raise Failure("busy", self.busy)
+            self.busy = name
+            self.step = None
+            self.progress = None
+            self.error = None
+            self.notice = None
+
+    def end(self, error=None, notice=None):
+        with self.lock:
+            self.busy = None
+            self.step = None
+            self.progress = None
+            self.error = error
+            self.notice = notice
+
+    def background(self, name, func, *args):
+        """Runs func in a thread as operation name; errors go to the page."""
+        self.begin(name)
+
+        def body():
+            try:
+                notice = func(*args)
+                self.end(notice=notice)
+            except Failure as e:
+                log.error("%s failed: %s", name, e)
+                self.end(error={"code": e.code, "detail": e.detail})
+            except Exception as e:  # pylint: disable=broad-except
+                log.exception("%s failed", name)
+                self.end(error={"code": "internal", "detail": repr(e)})
+
+        threading.Thread(target=body, name=name, daemon=True).start()
+
+    # -- setup ------------------------------------------------------------
+
+    def do_setup(self, then_start, google_play=False):
+        missing = [c for c, ok in checks().items() if not ok and c != "wayland"]
+        if missing:
+            raise Failure("unsupported", ", ".join(missing))
+        # Setting up again (to add Google Play) replaces the system image;
+        # apps and their data stay.
+        if self.session and self.session.poll() is None:
+            self.set_step("stop")
+            self.do_stop()
+        if not mount_data():
+            create_data_partition(self.set_step)
+            if not mount_data():
+                raise Failure("gpt", "ANDROID-DATA is missing after creating it")
+        self.prepare_dirs()
+        # Setting up again never takes Google Play away, and a card written
+        # again with an image of the same size has Android complete already.
+        google_play = google_play or (is_initialized() and has_google_play())
+        if not is_initialized() or google_play != has_google_play():
+            self.set_step("download")
+            self.waydroid_init("GAPPS" if google_play else "VANILLA")
+        self.set_step("configure")
+        configure_waydroid()
+        log.info("Android is set up")
+        if then_start:
+            self.do_start(show=True)
+        return {"code": "setup_done"}
+
+    def waydroid_init(self, system_type):
+        # -f: also when set up before. Parts already downloaded with the same
+        # system type are kept, so a retry continues where it stopped.
+        cmd = [WAYDROID, "init", "-f", "-s", system_type]
+        log.info("$ %s", " ".join(cmd))
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env=root_env(), cwd="/")
+        last = collections.deque(maxlen=20)
+        part = "system"
+        buf = b""
+        while True:
+            chunk = p.stdout.read1(4096)
+            if not chunk:
+                break
+            buf += chunk
+            # Progress lines end in \r, the others in \n.
+            *lines, buf = re.split(rb"[\r\n]", buf)
+            for raw in lines:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                m = PROGRESS_RE.search(line)
+                if m:
+                    done, total = (int(float(x) * 1e6) for x in m.groups())
+                    self.set_step("download_" + part, [done, total])
+                    continue
+                last.append(line)
+                log.info("  %s", line)
+                if "Downloading " in line:
+                    # The system image comes first, then the vendor image
+                    # (.../images/vendor/...-vendor.zip); a retry skips
+                    # the parts already installed.
+                    part = "vendor" if "vendor" in line else "system"
+                    self.set_step("download_" + part, [0, 0])
+                elif "Validating" in line:
+                    self.set_step("verify_" + part)
+                elif "Extracting" in line:
+                    self.set_step("extract_" + part)
+        if p.wait() != 0 or not is_initialized():
+            detail = "\n".join(list(last)[-5:])
+            if "OTA channel" in detail or "URLError" in detail or "Name or service" in detail:
+                raise Failure("no_network", detail)
+            raise Failure("init_failed", detail)
+
+    def prepare_dirs(self):
+        pw = chronos()
+        for path in (USER_HOME, XDG_DATA_HOME, INCOMING):
+            os.makedirs(path, 0o755, exist_ok=True)
+            os.chown(path, pw.pw_uid, pw.pw_gid)
+        os.makedirs(RUN, 0o755, exist_ok=True)
+        for path, mode in ((SESSION_BUS_DIR, 0o700), (PULSE_DIR, 0o755)):
+            os.makedirs(path, mode, exist_ok=True)
+            os.chown(path, pw.pw_uid, pw.pw_gid)
+        # Waydroid bind-mounts $PULSE_RUNTIME_PATH/native into Android
+        # unconditionally; an empty file keeps the container starting.
+        native = PULSE_DIR + "/native"
+        if not os.path.exists(native):
+            open(native, "w").close()
+        os.chown(native, pw.pw_uid, pw.pw_gid)
+
+    # -- start ------------------------------------------------------------
+
+    def do_start(self, show=True, package=None):
+        if not is_mounted(WORK) and not mount_data():
+            raise Failure("not_set_up")
+        if not is_initialized():
+            raise Failure("not_set_up")
+        if not os.path.exists(f"{WAYLAND_DIR}/{WAYLAND_DISPLAY}"):
+            raise Failure("no_wayland", f"{WAYLAND_DIR}/{WAYLAND_DISPLAY} is missing")
+        if not (self.session and self.session.poll() is None):
+            self.set_step("configure")
+            self.prepare_dirs()
+            configure_waydroid()
+            self.set_step("container")
+            self.start_container_service()
+            self.start_session_bus()
+            self.set_step("boot")
+            self.start_session()
+        if not self.ready.wait(timeout=900):
+            raise Failure("boot_timeout", "\n".join(self.session_output))
+        if self.session.poll() is not None:
+            raise Failure("session_failed", "\n".join(self.session_output))
+        if package:
+            self.set_step("show")
+            run_user([WAYDROID, "app", "launch", package], timeout=60)
+        elif show:
+            self.set_step("show")
+            run_user([WAYDROID, "show-full-ui"], timeout=60)
+        return None
+
+    def start_container_service(self):
+        if self.container and self.container.poll() is None:
+            return
+        import dbus  # pylint: disable=import-outside-toplevel
+        bus = dbus.SystemBus()
+        if bus.name_has_owner("id.waydro.Container"):
+            # Left over from an earlier run of this service; it works as well.
+            log.info("Waydroid's container service is already running")
+            return
+        log.info("$ %s container start", WAYDROID)
+        self.container = subprocess.Popen(
+            [WAYDROID, "container", "start"], stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=root_env(), cwd="/")
+        threading.Thread(target=self.pipe_to_log, args=(self.container, "container"),
+                         daemon=True).start()
+        for _ in range(300):
+            if bus.name_has_owner("id.waydro.Container"):
+                return
+            if self.container.poll() is not None:
+                break
+            time.sleep(0.1)
+        raise Failure("container_failed", "\n".join(list(recent)[-10:]))
+
+    def start_session_bus(self):
+        if self.bus and self.bus.poll() is None and os.path.exists(SESSION_BUS):
+            return
+        kill_pidfile(SESSION_BUS_PID, "dbus-daemon")
+        if os.path.exists(SESSION_BUS):
+            os.unlink(SESSION_BUS)
+        cmd = ["dbus-daemon", "--nofork", "--nopidfile",
+               f"--config-file={SHARE}/session-bus.conf",
+               f"--address=unix:path={SESSION_BUS}"]
+        log.info("$ %s", " ".join(cmd))
+        self.bus = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, **as_user())
+        threading.Thread(target=self.pipe_to_log, args=(self.bus, "dbus"),
+                         daemon=True).start()
+        write_file(SESSION_BUS_PID, str(self.bus.pid))
+        for _ in range(100):
+            if os.path.exists(SESSION_BUS):
+                return
+            if self.bus.poll() is not None:
+                break
+            time.sleep(0.05)
+        raise Failure("bus_failed", f"dbus-daemon exited with {self.bus.poll()}")
+
+    def start_session(self):
+        self.ready.clear()
+        self.session_output.clear()
+        cmd = [WAYDROID, "session", "start"]
+        log.info("$ %s (as %s)", " ".join(cmd), USER)
+        self.session = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, **as_user())
+        threading.Thread(target=self.watch_session, args=(self.session,),
+                         daemon=True).start()
+
+    def watch_session(self, proc):
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").rstrip()
+            self.session_output.append(line)
+            log.info("[session] %s", line)
+            if READY_RE.search(line):
+                self.ready.set()
+        code = proc.wait()
+        log.info("Android session ended (exit status %s)", code)
+        # Wake anyone waiting for the boot; they see the session is gone.
+        self.ready.set()
+
+    def pipe_to_log(self, proc, name):
+        for raw in proc.stdout:
+            log.info("[%s] %s", name, raw.decode("utf-8", "replace").rstrip())
+        log.info("%s exited with %s", name, proc.wait())
+
+    # -- stop -------------------------------------------------------------
+
+    def do_stop(self):
+        session = self.session
+        if session and session.poll() is None:
+            run_user([WAYDROID, "session", "stop"], timeout=60, check=False)
+            try:
+                session.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                session.terminate()
+                session.wait(timeout=10)
+        self.ready.clear()
+        return None
+
+    def shutdown(self):
+        """Stops everything (logout or shutdown); the job may be killed soon."""
+        self.stopping = True
+        log.info("Shutting down")
+        with self.lock:
+            self.busy = "stop"
+        try:
+            self.do_stop()
+        except Exception:  # pylint: disable=broad-except
+            log.exception("stopping Android")
+        for proc in (self.container, self.bus):
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        if is_mounted(WORK):
+            run(["umount", "-l", WORK], check=False, timeout=60)
+
+    # -- apps -------------------------------------------------------------
+
+    def do_install(self, path, name):
+        try:
+            if not self.running():
+                self.do_start(show=False)
+            before = app_files()
+            for _ in range(15):
+                # Until Waydroid has rewritten every app's file after a start.
+                time.sleep(1)
+                now, before = before, app_files()
+                if now == before:
+                    break
+            self.set_step("install")
+            p = run_user([WAYDROID, "app", "install", path], timeout=600, check=False)
+            out = (p.stdout or "").strip()
+            # `waydroid app install` prints nothing when it works; its
+            # errors ("Failed to access IPlatform service", "WayDroid
+            # session is stopped", a traceback) still exit with 0.
+            if p.returncode != 0 or re.search(r"rror|Failed|stopped|Traceback", out):
+                raise Failure("install_failed", out[-500:])
+            for _ in range(60):
+                # A new file for a new app, a newer one for an update. Apps
+                # without a launcher icon get none.
+                changed = {f for f, t in app_files().items() if before.get(f) != t}
+                apps = [a for a in list_apps()
+                        if f"{APPS_DIR}/waydroid.{a['package']}.desktop" in changed]
+                if apps:
+                    return {"code": "installed", "detail": apps[0]["name"]}
+                time.sleep(1)
+            return {"code": "install_sent", "detail": name}
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def checks():
+    """What the kernel and image provide; the page explains what is missing."""
+    filesystems = read_file("/proc/filesystems")
+    return {
+        "binder": re.search(r"\sbinder$", filesystems, re.M) is not None,
+        "waydroid": os.access(WAYDROID, os.X_OK),
+        "wayland": os.path.exists(f"{WAYLAND_DIR}/{WAYLAND_DISPLAY}"),
+    }
+
+
+def kill_pidfile(path, name):
+    try:
+        pid = int(read_file(path))
+    except ValueError:
+        return
+    if name in read_file(f"/proc/{pid}/cmdline").replace("\0", " "):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".webmanifest": "application/manifest+json",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+}
+STATIC = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js",
+          "/style.css": "style.css", "/manifest.webmanifest": "manifest.webmanifest",
+          "/sw.js": "sw.js", "/icon.svg": "icon.svg"}
+CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; "
+       "script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "pinebook-android"
+    protocol_version = "HTTP/1.1"
+    android = None  # set by serve()
+
+    def log_message(self, fmt, *args):  # pylint: disable=arguments-differ
+        pass
+
+    def send(self, code, body=b"", ctype="text/plain; charset=utf-8", extra=None):
+        if isinstance(body, str):
+            body = body.encode()
+        if code >= 400:
+            # The request body may not have been read; do not parse it as
+            # the next request.
+            self.close_connection = True
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        if self.close_connection:
+            self.send_header("Connection", "close")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def send_json(self, obj, code=200):
+        self.send(code, json.dumps(obj), "application/json")
+
+    def host_ok(self):
+        host = (self.headers.get("Host") or "").lower()
+        host = re.sub(r":80$", "", host)
+        return host in HOSTS
+
+    def do_GET(self):  # pylint: disable=invalid-name
+        if not self.host_ok():
+            return self.send(421, "Use http://android.localhost/\n")
+        path = urllib.parse.urlsplit(self.path).path
+        if path in STATIC:
+            name = STATIC[path]
+            try:
+                with open(f"{SHARE}/web/{name}", "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self.send(404, "not found\n")
+            extra = {"Content-Security-Policy": CSP} if name.endswith(".html") else {}
+            return self.send(200, body, CONTENT_TYPES[os.path.splitext(name)[1]], extra)
+        if path == "/icon.png":
+            return self.send_file(WAYDROID_ICON, "/icon.svg")
+        m = re.fullmatch(r"/icons/([A-Za-z0-9_.]+)\.png", path)
+        if m and PACKAGE_RE.match(m.group(1)):
+            return self.send_file(f"{ICONS_DIR}/{m.group(1)}.png")
+        if path == "/api/status":
+            return self.send_json(self.android.status())
+        if path == "/api/log":
+            lines = list(recent) + ["", "--- " + WORK + "/waydroid.log ---"]
+            lines += [l.rstrip("\n") for l in tail(WORK + "/waydroid.log")]
+            return self.send(200, "\n".join(lines) + "\n")
+        return self.send(404, "not found\n")
+
+    do_HEAD = do_GET
+
+    def send_file(self, path, fallback=None):
+        try:
+            with open(path, "rb") as f:
+                body = f.read()
+        except OSError:
+            if fallback:
+                return self.send(302, "", extra={"Location": fallback})
+            return self.send(404, "not found\n")
+        return self.send(200, body, "image/png", {"Cache-Control": "max-age=60"})
+
+    def do_POST(self):  # pylint: disable=invalid-name
+        if not self.host_ok():
+            return self.send(421, "Use http://android.localhost/\n")
+        origin = self.headers.get("Origin")
+        if origin and origin.lower() != "http://" + (self.headers.get("Host") or "").lower():
+            return self.send(403, "cross-origin request\n")
+        if self.headers.get(API_HEADER) != "1":
+            return self.send(403, f"missing {API_HEADER} header\n")
+        path = urllib.parse.urlsplit(self.path).path
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.send(400, "bad Content-Length\n")
+        a = self.android
+        try:
+            if path == "/api/install":
+                return self.install(length)
+            body = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            if path == "/api/setup":
+                a.background("setup", a.do_setup, bool(body.get("start", True)),
+                             bool(body.get("google_play", False)))
+            elif path == "/api/android-id":
+                if not a.running():
+                    raise Failure("not_running")
+                return self.send_json({"android_id": android_id()})
+            elif path == "/api/start":
+                a.background("start", a.do_start, True)
+            elif path == "/api/launch":
+                package = str(body.get("package", ""))
+                if not PACKAGE_RE.match(package):
+                    return self.send(400, "bad package name\n")
+                if a.running():
+                    run_user([WAYDROID, "app", "launch", package], timeout=60)
+                else:
+                    a.background("start", a.do_start, True, package)
+            elif path == "/api/stop":
+                a.background("stop", a.do_stop)
+            else:
+                return self.send(404, "not found\n")
+        except Failure as e:
+            return self.send_json({"error": {"code": e.code, "detail": e.detail}}, 409)
+        except ValueError:
+            return self.send(400, "bad request\n")
+        return self.send_json(a.status())
+
+    def install(self, length):
+        if not 0 < length <= MAX_APK:
+            return self.send(413, "the file must be a non-empty APK under 4 GB\n")
+        name = os.path.basename(urllib.parse.unquote(self.headers.get("X-File-Name") or "app.apk"))
+        a = self.android
+        if not is_mounted(WORK) or not is_initialized():
+            self.rfile.read(length)
+            raise Failure("not_set_up")
+        path = f"{INCOMING}/{uuid.uuid4().hex}.apk"
+        pw = chronos()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.fchown(fd, pw.pw_uid, pw.pw_gid)
+            with os.fdopen(fd, "wb") as f:
+                left = length
+                while left:
+                    chunk = self.rfile.read(min(left, 1 << 20))
+                    if not chunk:
+                        raise Failure("upload", "the upload was cut short")
+                    f.write(chunk)
+                    left -= len(chunk)
+            with open(path, "rb") as f:
+                if f.read(4) != b"PK\x03\x04":
+                    raise Failure("not_apk", name)
+            a.background("install", a.do_install, path, name)
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        return self.send_json(a.status())
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class Server6(Server):
+    address_family = socket.AF_INET6
+
+
+def serve(android):
+    Handler.android = android
+    servers = [Server(("127.0.0.1", PORT), Handler)]
+    try:
+        servers.append(Server6(("::1", PORT), Handler))
+    except OSError as e:
+        log.info("Not listening on [::1]:%d: %s", PORT, e)
+    for s in servers[1:]:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    log.info("Listening on http://android.localhost/")
+    return servers
+
+
+def daemon():
+    setup_logging(to_file=True)
+    android = Android()
+    try:
+        if mount_data():
+            log.info("%s is mounted at %s", PART_LABEL, WORK)
+    except Failure as e:
+        log.error("Mounting %s: %s", PART_LABEL, e)
+        android.error = {"code": e.code, "detail": e.detail}
+    servers = serve(android)
+
+    def on_term(signum, frame):  # pylint: disable=unused-argument
+        threading.Thread(target=lambda: (android.shutdown(), os._exit(0)),
+                         daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+    servers[0].serve_forever()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("daemon", help="run the service (upstart job pinebook-android)")
+    sub.add_parser("info", help="print the boot disk and the free space for Android")
+    args = parser.parse_args()
+    if args.cmd == "daemon":
+        daemon()
+    elif args.cmd == "info":
+        print(json.dumps(partition_info(), indent=2))
+
+
+if __name__ == "__main__":
+    main()

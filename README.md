@@ -54,7 +54,7 @@ One image is built (see `build/README.md`); it boots from microSD and can then b
 │   ├── README.md              how the build scripts work
 │   ├── linux/                 preflight, sync, build, flash-microsd
 │   └── windows/               Start-PinebookBuild.ps1 (runs the Linux scripts in WSL2)
-├── docs/                      hardware, porting, storage and Windows build notes
+├── docs/                      hardware, porting, storage, Windows build and Waydroid notes
 └── sources/
     └── UPSTREAM_SOURCES.md
 ```
@@ -199,5 +199,8 @@ See [build/README.md](build/README.md) for stages and settings and
 for this board needs the board overlay in
 `boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/`; see
 [docs/STORAGE.md](docs/STORAGE.md) and [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md).
+
+Android apps run through Waydroid: after logging in, open http://android.localhost.
+See [docs/WAYDROID.md](docs/WAYDROID.md).
 
 

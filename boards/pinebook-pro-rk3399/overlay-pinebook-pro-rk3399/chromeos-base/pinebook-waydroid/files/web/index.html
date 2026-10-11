@@ -1,0 +1,98 @@
+<!doctype html>
+<!-- Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+     Distributed under the terms of the GNU General Public License v2 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Android</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header>
+  <img src="/icon.svg" alt="" width="40" height="40">
+  <h1 data-t="title">Android</h1>
+  <span id="state" class="badge"></span>
+  <button id="install-app" class="link" type="button" hidden data-t="install_app"></button>
+</header>
+<main>
+  <div id="message" class="message" hidden>
+    <p id="message-text"></p>
+    <details id="message-details" hidden>
+      <summary data-t="details"></summary>
+      <pre id="message-detail"></pre>
+    </details>
+  </div>
+
+  <section id="setup" hidden>
+    <p data-t="setup_intro"></p>
+    <div id="setup-ok">
+      <p data-t="setup_first"></p>
+      <ul>
+        <li id="setup-partition"></li>
+        <li data-t="setup_download"></li>
+      </ul>
+      <p data-t="setup_time"></p>
+      <label class="check"><input type="checkbox" id="setup-play"> <span data-t="setup_play"></span></label>
+      <p class="hint" data-t="setup_play_hint"></p>
+      <button id="setup-button" class="primary" type="button" data-t="setup_button"></button>
+    </div>
+    <div id="setup-problem" hidden>
+      <p data-t="setup_problem"></p>
+      <ul id="setup-problems"></ul>
+    </div>
+  </section>
+
+  <section id="progress" hidden>
+    <p id="step"></p>
+    <progress id="bar"></progress>
+    <p id="bar-text" class="hint"></p>
+  </section>
+
+  <section id="controls" hidden>
+    <div class="buttons">
+      <button id="start-button" class="primary" type="button"></button>
+      <button id="stop-button" type="button" data-t="btn_stop"></button>
+      <label class="button" id="apk-label">
+        <span data-t="btn_install"></span>
+        <input type="file" id="apk" accept=".apk,application/vnd.android.package-archive" hidden>
+      </label>
+    </div>
+    <p class="hint" data-t="drop_hint"></p>
+  </section>
+
+  <section id="play" hidden>
+    <h2>Google Play</h2>
+    <div id="play-on" hidden>
+      <p data-t="play_register"></p>
+      <button id="play-id-button" type="button" data-t="play_show_id"></button>
+      <p id="play-id" class="code" hidden></p>
+    </div>
+    <div id="play-off" hidden>
+      <p data-t="play_add_text"></p>
+      <button id="play-add-button" type="button" data-t="play_add"></button>
+    </div>
+  </section>
+
+  <section id="apps" hidden>
+    <h2 data-t="apps_title"></h2>
+    <p id="apps-empty" class="hint" data-t="apps_empty" hidden></p>
+    <ul id="app-grid" class="grid"></ul>
+  </section>
+
+  <section id="options" hidden>
+    <label class="check"><input type="checkbox" id="autostart"> <span data-t="autostart"></span></label>
+    <p class="hint" data-t="limits"></p>
+  </section>
+
+  <details id="logbox">
+    <summary data-t="log_title"></summary>
+    <pre id="log"></pre>
+  </details>
+</main>
+</body>
+</html>

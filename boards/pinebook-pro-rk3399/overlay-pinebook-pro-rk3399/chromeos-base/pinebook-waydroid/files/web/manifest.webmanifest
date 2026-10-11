@@ -1,0 +1,14 @@
+{
+  "name": "Android",
+  "short_name": "Android",
+  "description": "Android apps through Waydroid",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f8f7",
+  "theme_color": "#1e8e5a",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

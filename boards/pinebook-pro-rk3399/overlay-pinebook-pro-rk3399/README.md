@@ -22,11 +22,16 @@ name `pinebook-pro-rk3399` (`BOARD_NAME` in `../board.conf`).
 | `kernel/pinebook-pro.config` | Kernel fragment for the upstream `rk3399-pinebook-pro.dts` |
 | `kernel/apply-fragment.sh` | Merges the fragment, runs `olddefconfig`, fails if a symbol was dropped |
 | `scripts/disk_layout.json` | `legacy_disk_layout.json` with arm64-generic's sizes, plus RWFW (partition 11) grown to 16 MiB so the boot loader at sector 64 fits inside it |
-| `virtual/chromeos-bsp` | Pulls in the board BSP (version 3, above arm64-generic's) |
+| `virtual/chromeos-bsp` | Pulls in the board BSP (version 3, above arm64-generic's), and Waydroid with USE `waydroid` |
 | `virtual/opengles` | Mesa Panfrost (`media-libs/mesa-panfrost`) for the Mali-T860 |
 | `chromeos-base/chromeos-bsp-pinebook-pro-rk3399` | U-Boot boot script (`/boot/pinebook-pro/boot.scr`); depends on the firmware and U-Boot |
 | `sys-boot/pinebook-pro-u-boot` | Upstream U-Boot v2024.10, `pinebook-pro-rk3399_defconfig` + `files/chromiumos.config`, with TF-A v2.10.0 BL31 |
 | `sys-firmware/ap6256-firmware` | AP6256 (BCM43456) Wi-Fi firmware, CLM blob, NVRAM and Bluetooth patch, pinned Armbian commit |
+| `chromeos-base/pinebook-waydroid` | Android apps: the `pinebook-android` service (upstart, on login), the page http://android.localhost and the `android` command; see `docs/WAYDROID.md` |
+| `app-containers/waydroid` | Waydroid 1.6.3 without systemd, AppArmor, seccomp or PyGObject (`files/gi` stands in for the parts of GLib it uses) |
+| `app-containers/lxc` | LXC 7.0.0 for Waydroid's container, without AppArmor, seccomp, SELinux or systemd |
+| `dev-libs/libglibutil`, `dev-libs/gbinder`, `dev-python/gbinder` | libgbinder and its Python module, Waydroid's binder client |
+| `profiles/base/package.use` | dnsmasq with DHCP, for the Android container's network |
 
 `../install-u-boot.sh` writes the built boot loader into a disk image.
 
@@ -91,6 +96,7 @@ v2.10.0:
 - `install-u-boot.sh` writes the loader into a test GPT image with a 16 MiB
   RWFW and refuses an image whose next partition overlaps the loader.
 - Shell scripts pass `bash -n` and `shellcheck`; ebuilds pass `bash -n`.
+- Waydroid and its service: see "What was checked" in `docs/WAYDROID.md`.
 
 ## Not checked (needs a real ChromiumOS checkout)
 
@@ -107,6 +113,14 @@ v2.10.0:
 - U-Boot and TF-A built with the SDK's toolchain (`${CHOST}-` and
   `arm-none-eabi-`) instead of the GCC cross compilers used here.
 - Anything on the hardware.
+
+## Android apps (Waydroid)
+
+The image includes Waydroid: after logging in, http://android.localhost sets
+Android up on first use (an ANDROID-DATA partition in the card's free space,
+then a 1 GB download) and starts it; apps open as ChromeOS windows. The kernel
+options are at the end of `kernel/pinebook-pro.config`. Usage, design and what
+is still unverified: [docs/WAYDROID.md](../../../docs/WAYDROID.md).
 
 ## Known gaps
 
