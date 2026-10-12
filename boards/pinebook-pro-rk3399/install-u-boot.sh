@@ -80,6 +80,12 @@ esp_start=$(sfdisk -d "${image}" | sed -n 's/^[^ ]*[^0-9]12 *: start= *\([0-9]*\
 [[ ${esp_start} =~ ^[0-9]+$ ]] || die "no partition 12 (EFI-SYSTEM) in ${image}"
 echo "Copying ${boot_scr} to /boot.scr on partition 12 (EFI-SYSTEM)"
 MTOOLS_SKIP_CHECK=1 mcopy -o -i "${image}@@$(( esp_start * SECTOR ))" "${boot_scr}" ::/boot.scr
+# The log collector too, so it is easy to find from Windows; on the laptop
+# it is also installed as /usr/sbin/pinebook-collect.
+collect=$(dirname "${boot_scr}")/../../usr/sbin/pinebook-collect
+if [[ -f ${collect} ]]; then
+	MTOOLS_SKIP_CHECK=1 mcopy -o -i "${image}@@$(( esp_start * SECTOR ))" "${collect}" ::/pinebook-collect.sh
+fi
 # Basic data type instead of EFI System, so Windows mounts the partition and
 # the boot logs that pinebook-boot-logs writes to logs/ can be read there.
 # The legacy-BIOS-bootable attribute that distro boot looks for stays.
