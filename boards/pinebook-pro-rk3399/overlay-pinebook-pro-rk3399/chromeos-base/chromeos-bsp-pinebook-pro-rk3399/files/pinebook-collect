@@ -33,6 +33,7 @@ run lsmod       lsmod
 run dri         sh -c 'ls -la /dev/dri /sys/class/drm; cat /sys/kernel/debug/dri/*/name 2>/dev/null'
 run gpu         sh -c 'ls -la /sys/class/devfreq; grep -r . /sys/bus/platform/drivers/panfrost 2>/dev/null | head'
 run modules-dt  sh -c 'cat /sys/firmware/devicetree/base/gpu@*/compatible 2>/dev/null | tr "\0" "\n"; modinfo panfrost 2>&1 | head -20'
+run deferred    sh -c 'cat /sys/kernel/debug/devices_deferred; ls -la /sys/bus/platform/devices/ff9a0000.gpu/; cat /sys/bus/platform/devices/ff9a0000.gpu/waiting_for_supplier'
 run net         sh -c 'ip -d link; ip addr'
 run lsusb       sh -c 'lsusb 2>/dev/null || ls /sys/bus/usb/devices'
 run input       cat /proc/bus/input/devices
