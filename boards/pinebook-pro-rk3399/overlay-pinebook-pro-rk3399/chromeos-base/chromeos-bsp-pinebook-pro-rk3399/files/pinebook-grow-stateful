@@ -34,7 +34,7 @@ import subprocess
 import sys
 import zlib
 
-RESERVE = 16 << 30          # bytes left free at the end for ANDROID-DATA
+RESERVE = 25 << 30          # bytes left free at the end for ANDROID-DATA
 MIN_GROWTH = 1 << 30        # don't bother for less
 ALIGN = 1 << 20             # partition end on a 1 MiB boundary
 LOG = "/run/pinebook-grow-stateful.log"
