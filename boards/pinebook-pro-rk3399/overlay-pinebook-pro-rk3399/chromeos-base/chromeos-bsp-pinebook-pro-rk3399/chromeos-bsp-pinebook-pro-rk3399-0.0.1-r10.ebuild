@@ -3,9 +3,9 @@
 
 EAPI=7
 
-inherit appid
+inherit appid cros-audio-configs
 
-DESCRIPTION="Pinebook Pro board support: U-Boot boot script and firmware"
+DESCRIPTION="Pinebook Pro board support: boot script, firmware, audio and the Pinebook app"
 HOMEPAGE="https://github.com/220242/chromiumos-pinebook-pro-rk3399"
 
 LICENSE="BSD-Google"
@@ -20,6 +20,7 @@ DEPEND="sys-boot/pinebook-pro-u-boot"
 # strace: bring-up only, for pinebook-startup-trace.
 RDEPEND="
 	dev-debug/strace
+	chromeos-base/pinebook-control
 	sys-firmware/ap6256-firmware
 "
 BDEPEND="dev-embedded/u-boot-tools"
@@ -50,4 +51,12 @@ src_install() {
 	# files/startup.override (not installed now that it boots; the TPM fix
 	# came from such a trace).
 	dosbin "${FILESDIR}/pinebook-startup-trace"
+
+	# Sound: UCM for the ES8316 codec (card "rockchip,es8316-codec"), which
+	# CRAS needs to use the speakers, the headphone jack and the microphone.
+	install_audio_configs pinebook-pro-rk3399 "${FILESDIR}/audio-config"
+
+	# No TPM: trunksd stays stopped instead of crashing at every boot.
+	insinto /etc/init
+	doins "${FILESDIR}/trunksd.override"
 }
