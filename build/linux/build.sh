@@ -114,7 +114,8 @@ stage_patch() {
     [[ -f "${src}" ]] || die "No image at ${src}; run the image stage once first"
   fi
   # shellcheck disable=SC2086  # PATCH_PACKAGES is a list of atoms
-  run cros_sdk -- "emerge-${BOARD}" --jobs="${JOBS}" ${PATCH_PACKAGES}
+  # --usepkg: reuse binary packages a packages stage already built.
+  run cros_sdk -- "emerge-${BOARD}" --usepkg --jobs="${JOBS}" ${PATCH_PACKAGES}
   # The chroot only sees files inside the checkout.
   run mkdir -p "${CHROMIUMOS_ROOT}/.pinebook"
   run cp "${REPO_ROOT}/build/linux/patch-image-inner.sh" "${CHROMIUMOS_ROOT}/.pinebook/"
