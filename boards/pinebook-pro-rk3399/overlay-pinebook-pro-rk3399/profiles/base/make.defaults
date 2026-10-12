@@ -39,3 +39,8 @@ USE="${USE} -encrypted_stateful"
 # chromeos-base/pinebook-waydroid (see docs/WAYDROID.md). The kernel options
 # it needs are in kernel/pinebook-pro.config either way.
 USE="${USE} waydroid"
+
+# No TPM at all: like ChromeOS Flex, let the system run without one. Without
+# this, chromeos_startup opens /dev/tpm0 to extend a PCR and the TPM library
+# exits the process with status 1 when the device is missing (boot loop).
+USE="${USE} tpm_insecure_fallback"
