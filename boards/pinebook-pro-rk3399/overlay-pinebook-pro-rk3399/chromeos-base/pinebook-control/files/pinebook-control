@@ -344,6 +344,31 @@ def read_tune_file():
         return {"unknown": True}
 
 
+NOLOGS_NAME = "pinebook-nologs"
+
+
+def boot_logs_enabled():
+    """pinebook-boot-logs writes to EFI-SYSTEM unless pinebook-nologs exists."""
+    try:
+        with EspMount() as esp:
+            return not os.path.exists(os.path.join(esp, NOLOGS_NAME))
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
+        return None
+
+
+def set_boot_logs(enabled):
+    with EspMount() as esp:
+        path = os.path.join(esp, NOLOGS_NAME)
+        if enabled:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            with open(path, "w") as f:
+                f.write("Delete this file to save boot logs to logs/ again.\n")
+        subprocess.run(["sync"])
+    log.info("Boot logs on EFI-SYSTEM: %s", "on" if enabled else "off")
+
+
 def running_tables():
     """The OPP tables the kernel booted with: {table: [(MHz, mV), ...]}."""
     out = {}
@@ -622,6 +647,7 @@ def settings_info():
                              for k, v in OVERCLOCK.items()},
         "undervolt_steps": UNDERVOLT_STEPS,
         "tune_file": read_tune_file(),
+        "boot_logs": boot_logs_enabled(),
         "running_tables": running_tables(),
         "tune_tables": {k: [(hz // 1000000, v // 1000) for hz, v, _ in rows]
                         for k, rows in tune_tables(s["tune"]).items()},
@@ -695,6 +721,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         save_settings(new)
         applied = apply_limits(new)
         result = {"applied": applied, "reboot_needed": False}
+        if isinstance(body.get("boot_logs"), bool):
+            try:
+                set_boot_logs(body["boot_logs"])
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
+                result["error"] = "Could not change %s: %s" % (NOLOGS_NAME, e)
         if body.get("tune") is not None and new["tune"] != (read_tune_file() or
                                                             DEFAULTS["tune"]):
             try:

@@ -173,6 +173,9 @@ function renderSettings() {
   $("applied").textContent = `Сейчас: A53 до ${mhz(a.little_max)}, A72 до ${mhz(a.big_max)}, ` +
     `${a.cpu_governor}; GPU до ${ghzHz(a.gpu_max)}, ${a.gpu_governor}.`;
 
+  $("boot-logs").checked = info.boot_logs !== false;
+  $("boot-logs").disabled = info.boot_logs == null;
+
   const t = s.tune;
   $("overclock").value = t.overclock;
   const uv = (v) => (v ? "−" + v + " мВ" : "Нет");
@@ -240,6 +243,10 @@ $("profiles").addEventListener("click", (e) => {
 
 ["little_max", "big_max", "gpu_max", "cpu_governor", "gpu_governor"].forEach((id) =>
   $(id).addEventListener("change", () => save(customBody(), () => "Применено")));
+
+$("boot-logs").addEventListener("change", (e) =>
+  save({ boot_logs: e.target.checked },
+    () => e.target.checked ? "Логи загрузки включены" : "Логи загрузки выключены"));
 
 $("tune-apply").addEventListener("click", () => {
   const tune = {
