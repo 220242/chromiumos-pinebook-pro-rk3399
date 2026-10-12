@@ -6,9 +6,9 @@ opens in its own window on the ChromiumOS desktop. Everything is set up and
 controlled from one page, http://android.localhost, or from the `android`
 command in a shell.
 
-**Status:** built into the board overlay, not yet run on the Pinebook Pro (the
-image does not reach the login screen yet). See "What was checked" and
-"Not verified yet" below.
+**Status:** the image builds with it, but it has not run on the Pinebook Pro
+yet (the image does not reach the login screen yet). See "What was checked"
+and "Not verified yet" below.
 
 ## Using it
 
@@ -137,6 +137,12 @@ Google only lets Play work on a registered device:
   not in a user's home.
 
 ## What was checked
+
+In the ChromiumOS SDK (stable branch): the kernel and every package build, and
+`build_image` makes the image. Its root partition has Waydroid, LXC and the
+`pinebook-android` job, the kernel has binder and binderfs built in, and about
+750 MB of the root partition's 2 GB is left. Python is in the root partition
+now; if it runs out of space, grow ROOT-A in `scripts/disk_layout.json`.
 
 In a cloud container, without a ChromiumOS checkout or the hardware:
 
