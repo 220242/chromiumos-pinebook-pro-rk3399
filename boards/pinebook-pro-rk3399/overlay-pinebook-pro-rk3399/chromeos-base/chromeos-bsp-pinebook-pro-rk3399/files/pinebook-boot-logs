@@ -16,7 +16,7 @@ collect() { # collect DIR: snapshot the logs into DIR
 	dmesg > "${out}/dmesg.txt.new" 2>&1 && mv -f "${out}/dmesg.txt.new" "${out}/dmesg.txt"
 	{ uptime; echo; initctl list; echo; mount; echo; ps -eo pid,stat,wchan:32,etime,args; } \
 		> "${out}/state.txt" 2>&1
-	for f in /run/*.log /run/chromeos_startup* /var/log/messages \
+	for f in /run/*.log /run/chromeos_startup* /var/log/messages /var/log/net.log \
 		/var/log/boot.log /var/log/ui/ui.LATEST /var/log/chrome/chrome \
 		/var/log/power_manager/powerd.LATEST /var/log/tpm*.log \
 		/mnt/stateful_partition/unencrypted/clobber*.log \
