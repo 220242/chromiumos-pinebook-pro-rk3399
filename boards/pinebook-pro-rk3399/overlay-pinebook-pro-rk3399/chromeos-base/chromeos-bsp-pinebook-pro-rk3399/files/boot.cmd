@@ -27,5 +27,10 @@ fdt set /gpu@ff9a0000 compatible "rockchip,rk3399-mali" "arm,mali-t860-CHROMIUM"
 # panicking and rebooting after 120 s, so pinebook-boot-logs can save it.
 # printk.devkmsg=on: keep every message programs write to the kernel log;
 # by default most of chromeos_startup's were dropped by the rate limit.
-setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30 printk.devkmsg=on"
+# brcmfmac.feature_disable=0x82000: no firmware supplicant (FWSUP, 0x2000)
+# and no SAE in firmware (0x80000). With them the AP6256 firmware takes over
+# the WPA handshake and ChromeOS's wpa_supplicant fails to connect
+# ("disconnect-failure"); the same setting is the usual fix on other
+# BCM4345 boards.
+setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30 printk.devkmsg=on brcmfmac.feature_disable=0x82000"
 booti ${kernel_addr_r} - ${fdt_addr_r}
