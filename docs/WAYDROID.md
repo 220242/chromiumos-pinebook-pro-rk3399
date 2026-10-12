@@ -63,8 +63,13 @@ partition of their own, mounted at `/var/lib/waydroid`. The stateful partition
 is too small for them and mounted `noexec`.
 
 - It is created on the microSD card the system booted from, after the image's
-  last partition, in all the free space that is left: write the image to a
-  card of 16 GB or more. At least 4 GB must be free.
+  last partition, in all the free space that is left. At least 4 GB must be
+  free: write the image to a card of 16 GB or more.
+- On the first boot from a big card, `pinebook-grow-stateful` grows STATE
+  (where `/home` and `/var` live) up to 25 GiB before the end of the card, so
+  Android gets the last 25 GiB. On a card with less room than that (or once
+  ANDROID-DATA exists) STATE is left as it is and Android gets all the free
+  space.
 - Only a GPT entry is added (partition 13, ext4, label `ANDROID-DATA`) and the
   backup GPT is moved to the end of the card. The ChromiumOS partitions stay
   as they are.
@@ -73,8 +78,10 @@ is too small for them and mounted `noexec`.
 - Writing a new image of the **same size** to the card keeps Android and its
   apps: the partition's file system is still there after the image. The page
   then offers to use it, and **Set up Android** only adds the partition back
-  and starts Android, without downloading it again. An image of a different
-  size moves the partition's start, and Android is set up from scratch.
+  and starts Android, without downloading it again: STATE grows to the same
+  place again, and the grow step does not touch a card whose free space
+  starts with Android's file system. An image of a different size can move
+  the partition's start, and Android is then set up from scratch.
 - Everyone who logs in on the laptop shares the same Android.
 
 ## Google Play
