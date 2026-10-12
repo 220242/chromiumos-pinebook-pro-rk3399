@@ -3,7 +3,7 @@
 
 EAPI=7
 
-inherit appid cros-audio-configs
+inherit appid cros-audio-configs udev
 
 DESCRIPTION="Pinebook Pro board support: boot script, firmware, audio and the Pinebook app"
 HOMEPAGE="https://github.com/220242/chromiumos-pinebook-pro-rk3399"
@@ -61,4 +61,7 @@ src_install() {
 	dosbin "${FILESDIR}/pinebook-grow-stateful"
 	insinto /etc/init
 	doins "${FILESDIR}/pinebook-grow-stateful.conf"
+
+	# /dev/video-dec0 etc., where Chrome looks for the hardware codecs.
+	udev_dorules "${FILESDIR}/50-media.rules"
 }
