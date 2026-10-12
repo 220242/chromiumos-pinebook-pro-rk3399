@@ -30,8 +30,11 @@ while grep -q " ${DEV_CONF} " /proc/mounts; do
 done
 
 keys=""
-read_keys() { # read_keys FILE: the allowed NAME=VALUE lines, CR stripped
-	tr -d '\r' < "$1" | grep -E '^(GOOGLE_API_KEY|GOOGLE_DEFAULT_CLIENT_ID|GOOGLE_DEFAULT_CLIENT_SECRET)=[A-Za-z0-9._-]+$'
+read_keys() { # read_keys FILE: the allowed NAME=VALUE lines
+	# Notepad may add a UTF-8 BOM and CRLF; people add spaces and quotes.
+	sed -e '1s/^\xef\xbb\xbf//' -e 's/\r$//' -e 's/^[[:space:]]*//' \
+		-e 's/[[:space:]]*$//' -e 's/[[:space:]]*=[[:space:]]*/=/' \
+		-e 's/="\(.*\)"$/=\1/' "$1" | grep -E '^(GOOGLE_API_KEY|GOOGLE_DEFAULT_CLIENT_ID|GOOGLE_DEFAULT_CLIENT_SECRET)=[A-Za-z0-9._-]+$'
 }
 
 disk=$(rootdev -s -d 2>/dev/null)
@@ -40,24 +43,43 @@ if [[ -n ${disk} ]]; then
 	*[0-9]) esp=${disk}p12 ;;
 	*) esp=${disk}12 ;;
 	esac
-	mnt=$(mktemp -d)
-	if mount -t vfat -o ro,nosuid,nodev,noexec "${esp}" "${mnt}" 2>/dev/null; then
-		for f in "${mnt}"/google-api-keys.txt "${mnt}"/GOOGLE-API-KEYS.TXT; do
+	# EFI-SYSTEM may already be mounted read-write by pinebook-boot-logs; a
+	# second, read-only mount of it would fail, so use that one.
+	mnt=$(awk -v d="${esp}" '$1 == d { print $2; exit }' /proc/mounts)
+	own=""
+	if [[ -z ${mnt} ]]; then
+		mnt=$(mktemp -d)
+		if mount -t vfat -o nosuid,nodev,noexec "${esp}" "${mnt}"; then
+			own=1
+		else
+			log "Cannot mount ${esp}"
+			rmdir "${mnt}"
+			mnt=""
+		fi
+	fi
+	if [[ -n ${mnt} ]]; then
+		# Windows may hide a second .txt it added.
+		for f in "${mnt}"/google-api-keys.txt "${mnt}"/google-api-keys.txt.txt \
+			"${mnt}"/GOOGLE-API-KEYS.TXT "${mnt}"/google-api-keys; do
 			if [[ -f ${f} ]]; then
 				keys=$(read_keys "${f}")
-				log "Keys from EFI-SYSTEM/google-api-keys.txt"
+				log "Keys from EFI-SYSTEM/${f##*/}: $(echo -n "${keys}" | grep -c .) usable lines"
 				break
 			fi
 		done
-		umount "${mnt}"
+		[[ -n ${keys} ]] || log "No usable google-api-keys.txt on EFI-SYSTEM ($(ls "${mnt}" | tr '\n' ' '))"
+		if [[ -n ${own} ]]; then
+			umount "${mnt}"
+			rmdir "${mnt}"
+		fi
 	fi
-	rmdir "${mnt}"
 fi
 if [[ -z ${keys} && -f ${SAVED} ]]; then
 	keys=$(read_keys "${SAVED}")
 	log "Keys from ${SAVED}"
 fi
 if [[ -z ${keys} ]]; then
+	log "No Google API keys; Chrome runs without them"
 	exit 0
 fi
 
