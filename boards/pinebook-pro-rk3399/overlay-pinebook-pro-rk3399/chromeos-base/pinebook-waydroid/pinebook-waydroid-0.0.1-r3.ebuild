@@ -46,14 +46,11 @@ src_install() {
 
 	# The page as an app in the launcher from the first login, for every
 	# user and for guests: Chrome installs the web apps described in
-	# <extensions dir>/web_apps/*.json when a profile loads. The offline
-	# manifest makes it install without loading the page. Branded Chrome
-	# reads /usr/share/google-chrome, Chromium /usr/share/chromium.
-	local dir
-	for dir in google-chrome chromium; do
-		insinto "/usr/share/${dir}/extensions/web_apps"
-		doins "${FILESDIR}/launcher/pinebook-android.json"
-		newins "${FILESDIR}/web/icon-192.png" pinebook-android-192.png
-		newins "${FILESDIR}/web/icon-512.png" pinebook-android-512.png
-	done
+	# /usr/share/chromium/extensions/web_apps/*.json when a profile loads
+	# (the board's Chrome is Chromium-branded and reads only that path).
+	# The offline manifest makes it install without loading the page.
+	insinto /usr/share/chromium/extensions/web_apps
+	doins "${FILESDIR}/launcher/pinebook-android.json"
+	newins "${FILESDIR}/web/icon-192.png" pinebook-android-192.png
+	newins "${FILESDIR}/web/icon-512.png" pinebook-android-512.png
 }

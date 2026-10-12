@@ -136,9 +136,9 @@ Google only lets Play work on a registered device:
     localhost `Host` header, and changes need the `X-Android-Launcher` header
     and a matching `Origin`, so other web pages cannot use it.
 - **The launcher icon** is a web app Chrome installs for every profile, guests
-  included: `pinebook-android.json` in `/usr/share/google-chrome/extensions/web_apps`
-  (and the same under `/usr/share/chromium` for a Chromium build) describes the
-  page with an offline manifest, so it is installed without loading it. If the
+  included: `pinebook-android.json` in `/usr/share/chromium/extensions/web_apps`
+  (the only extensions path in the board's Chrome binary) describes the page
+  with an offline manifest, so it is installed without loading it. If the
   icon is missing, `chrome://web-app-internals` lists the preinstalled configs
   Chrome read and why one was skipped.
 - Android's session data lives under `/var/lib/waydroid/user` on `ANDROID-DATA`,
