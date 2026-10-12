@@ -344,6 +344,49 @@ def read_tune_file():
         return {"unknown": True}
 
 
+GOOGLE_KEYS_FILE = STATE_DIR + "/google-api-keys.conf"
+GOOGLE_KEYS = {
+    "api_key": ("GOOGLE_API_KEY", r"[A-Za-z0-9_-]{20,80}"),
+    "client_id": ("GOOGLE_DEFAULT_CLIENT_ID",
+                  r"[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com"),
+    "client_secret": ("GOOGLE_DEFAULT_CLIENT_SECRET", r"[A-Za-z0-9_-]{10,80}"),
+}
+
+
+def google_keys_info():
+    """Whether Chrome has Google API keys (values are not sent back)."""
+    out = {"saved": False, "client_id": None,
+           "active": bool(re.search(r"^GOOGLE_API_KEY=", read("/etc/chrome_dev.conf") or "",
+                                    re.M))}
+    text = read(GOOGLE_KEYS_FILE)
+    if text:
+        out["saved"] = True
+        m = re.search(r"^GOOGLE_DEFAULT_CLIENT_ID=(\S+)", text, re.M)
+        out["client_id"] = m.group(1) if m else None
+    return out
+
+
+def set_google_keys(keys):
+    """Saves the keys for pinebook-chrome-keys (None: removes them)."""
+    if keys is None:
+        if os.path.exists(GOOGLE_KEYS_FILE):
+            os.remove(GOOGLE_KEYS_FILE)
+        return
+    lines = []
+    for field, (name, pattern) in GOOGLE_KEYS.items():
+        value = str(keys.get(field) or "").strip()
+        if not re.fullmatch(pattern, value):
+            raise ValueError("%s does not look right" % name)
+        lines.append("%s=%s" % (name, value))
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = GOOGLE_KEYS_FILE + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, GOOGLE_KEYS_FILE)
+    log.info("Saved Google API keys (client %s)", keys.get("client_id"))
+
+
 NOLOGS_NAME = "pinebook-nologs"
 
 
@@ -648,6 +691,7 @@ def settings_info():
         "undervolt_steps": UNDERVOLT_STEPS,
         "tune_file": read_tune_file(),
         "boot_logs": boot_logs_enabled(),
+        "google_keys": google_keys_info(),
         "running_tables": running_tables(),
         "tune_tables": {k: [(hz // 1000000, v // 1000) for hz, v, _ in rows]
                         for k, rows in tune_tables(s["tune"]).items()},
@@ -721,6 +765,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         save_settings(new)
         applied = apply_limits(new)
         result = {"applied": applied, "reboot_needed": False}
+        if "google_keys" in body:
+            try:
+                set_google_keys(body["google_keys"])
+                result["relogin_needed"] = True
+            except (OSError, ValueError, AttributeError) as e:
+                result["error"] = str(e)
         if isinstance(body.get("boot_logs"), bool):
             try:
                 set_boot_logs(body["boot_logs"])

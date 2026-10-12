@@ -173,6 +173,11 @@ function renderSettings() {
   $("applied").textContent = `Сейчас: A53 до ${mhz(a.little_max)}, A72 до ${mhz(a.big_max)}, ` +
     `${a.cpu_governor}; GPU до ${ghzHz(a.gpu_max)}, ${a.gpu_governor}.`;
 
+  const k = info.google_keys || {};
+  $("keys-state").textContent =
+    (k.active ? "Chrome сейчас запущен с ключами. " : "Chrome сейчас без ключей. ") +
+    (k.saved ? `Сохранены ключи для ${k.client_id}.` : "Ключи в приложении не сохранены.");
+
   $("boot-logs").checked = info.boot_logs !== false;
   $("boot-logs").disabled = info.boot_logs == null;
 
@@ -243,6 +248,21 @@ $("profiles").addEventListener("click", (e) => {
 
 ["little_max", "big_max", "gpu_max", "cpu_governor", "gpu_governor"].forEach((id) =>
   $(id).addEventListener("change", () => save(customBody(), () => "Применено")));
+
+$("keys-save").addEventListener("click", () => {
+  const google_keys = {
+    api_key: $("api_key").value.trim(),
+    client_id: $("client_id").value.trim(),
+    client_secret: $("client_secret").value.trim(),
+  };
+  save({ google_keys }, () => {
+    ["api_key", "client_id", "client_secret"].forEach((id) => ($(id).value = ""));
+    return "Ключи сохранены. Выйди из сеанса, чтобы Chrome их подхватил.";
+  });
+});
+
+$("keys-clear").addEventListener("click", () =>
+  save({ google_keys: null }, () => "Ключи удалены (после выхода из сеанса)"));
 
 $("boot-logs").addEventListener("change", (e) =>
   save({ boot_logs: e.target.checked },

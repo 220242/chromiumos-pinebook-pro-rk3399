@@ -32,6 +32,10 @@ src_install() {
 	insinto /etc/init
 	doins "${FILESDIR}/pinebook-control.conf"
 
+	# Google API keys for Chrome, from EFI-SYSTEM or the app, before every ui start.
+	dosbin "${FILESDIR}/pinebook-chrome-keys"
+	doins "${FILESDIR}/pinebook-chrome-keys.conf"
+
 	insinto /usr/share/pinebook-control
 	doins -r "${FILESDIR}/web"
 
