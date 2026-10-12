@@ -50,3 +50,10 @@ USE="${USE} tpm_insecure_fallback"
 # adds crosvm, vm_concierge and the Termina VM image (termina-dlc, preloaded
 # by build_image).
 USE="${USE} kvm_host"
+
+# No hardware overlay planes in Chrome: everything is composited on the GPU.
+# With overlays, opening the Camera app made Chrome's DRM thread allocate
+# scanout buffers (rockchip dumb buffers, pinned RAM) until 3.4 GB were gone
+# and the kernel killed Chrome's processes. Only libchromeos-use-flags
+# (/etc/ui_use_flags.txt) reads this flag; Chrome itself is unchanged.
+USE="${USE} set_hw_overlay_strategy_none"
