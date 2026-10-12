@@ -45,11 +45,13 @@ run dri-clients sh -c 'for f in /sys/kernel/debug/dri/*/clients /sys/kernel/debu
 run video       sh -c 'for v in /sys/class/video4linux/*; do echo "$v: $(cat $v/name)"; done; ls -l /proc/[0-9]*/fd 2>/dev/null | grep -E "/dev/(video|media|dri)" | sort | uniq -c'
 run audio       sh -c 'amixer -c 0 contents 2>&1 | head -150; cras_test_client --dump_server_info 2>&1 | head -80; ls -laR /usr/share/alsa/ucm'
 run cpufreq     sh -c 'grep . /sys/devices/system/cpu/cpufreq/policy*/scaling_* /sys/class/devfreq/*/cur_freq /sys/class/devfreq/*/governor /sys/class/thermal/thermal_zone*/temp 2>/dev/null'
+run vm          sh -c 'ls -l /dev/kvm /dev/vhost-vsock; initctl status vm_concierge; ls -la /run/imageloader /var/cache/dlc-images 2>/dev/null'
 run selinux     sh -c 'getenforce 2>/dev/null; grep -c "avc:  denied" /var/log/messages 2>/dev/null'
 mkdir -p var_log
 cp -r /var/log/messages /var/log/net.log /var/log/ui /var/log/chrome /var/log/power_manager \
 	/var/log/upstart.log /var/log/boot.log /var/log/bootstat var_log/ 2>/dev/null
 ls -la /var/spool/crash /home/chronos/crash > crash-list.txt 2>&1
+mkdir -p user_log && cp /home/chronos/u-*/log/chrome* user_log/ 2>/dev/null
 
 saved=0
 for mnt in /run/pinebook-boot-logs/*/; do
