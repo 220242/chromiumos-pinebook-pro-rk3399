@@ -55,6 +55,12 @@ mount_and_log() { # mount_and_log DEVICE NAME
 	mkdir -p "${mnt}"
 	mountpoint -q "${mnt}" && return
 	mount -t vfat -o rw,noatime,umask=022 "$1" "${mnt}" || return
+	# The Pinebook app (or anyone, from any computer) turns the logs off by
+	# creating pinebook-nologs in the root of the FAT volume.
+	if [[ -e ${mnt}/pinebook-nologs ]]; then
+		umount "${mnt}"
+		return
+	fi
 	log_to "${mnt}" &
 }
 

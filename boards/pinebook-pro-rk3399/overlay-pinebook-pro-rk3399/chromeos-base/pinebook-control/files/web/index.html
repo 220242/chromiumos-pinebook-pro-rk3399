@@ -64,6 +64,15 @@
     <p id="applied" class="hint"></p>
   </div>
 
+  <div class="card">
+    <h2>Логи загрузки</h2>
+    <label class="row"><span>Сохранять логи каждой загрузки в logs/ на EFI-SYSTEM</span>
+      <input type="checkbox" id="boot-logs"></label>
+    <p class="hint">Работает со следующей загрузки. Выключить можно и из Windows:
+      создай на EFI-SYSTEM пустой файл <code>pinebook-nologs</code>.
+      <code>sudo pinebook-collect</code> работает всегда.</p>
+  </div>
+
   <div class="card warn">
     <h2>Разгон и андервольтинг</h2>
     <p class="hint">Меняет таблицы частот и напряжений в загрузчике, работает

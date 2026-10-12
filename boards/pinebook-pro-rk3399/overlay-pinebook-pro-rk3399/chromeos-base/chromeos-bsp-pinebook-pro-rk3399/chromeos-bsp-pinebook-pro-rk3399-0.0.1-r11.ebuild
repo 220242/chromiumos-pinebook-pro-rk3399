@@ -55,8 +55,4 @@ src_install() {
 	# Sound: UCM for the ES8316 codec (card "rockchip,es8316-codec"), which
 	# CRAS needs to use the speakers, the headphone jack and the microphone.
 	install_audio_configs pinebook-pro-rk3399 "${FILESDIR}/audio-config"
-
-	# No TPM: trunksd stays stopped instead of crashing at every boot.
-	insinto /etc/init
-	doins "${FILESDIR}/trunksd.override"
 }
