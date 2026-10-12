@@ -614,11 +614,17 @@ def gpu_render_node():
 
 
 def waydroid_configs():
-    """A hash of the installed Waydroid's container config templates."""
+    """A hash of the installed Waydroid's container config templates,
+    including the ones in subdirectories (apparmor_profiles)."""
     digest = hashlib.sha256()
-    for path in sorted(glob.glob(WAYDROID_CONFIGS + "/*")):
-        with open(path, "rb") as f:
-            digest.update(path.encode() + b"\0" + f.read())
+    for top, dirs, files in os.walk(WAYDROID_CONFIGS):
+        dirs.sort()
+        for name in sorted(files):
+            path = os.path.join(top, name)
+            if not os.path.isfile(path):
+                continue
+            with open(path, "rb") as f:
+                digest.update(path.encode() + b"\0" + f.read())
     return digest.hexdigest()
 
 
