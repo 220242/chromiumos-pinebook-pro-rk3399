@@ -57,7 +57,7 @@ src_install() {
 	install_audio_configs pinebook-pro-rk3399 "${FILESDIR}/audio-config"
 
 	# The image's STATE is 5 GB; grow it into the rest of the card at boot,
-	# leaving 16 GiB at the end for Android (pinebook-android).
+	# leaving 25 GiB at the end for Android (pinebook-android).
 	dosbin "${FILESDIR}/pinebook-grow-stateful"
 	insinto /etc/init
 	doins "${FILESDIR}/pinebook-grow-stateful.conf"
