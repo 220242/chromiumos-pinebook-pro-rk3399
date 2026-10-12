@@ -1,0 +1,14 @@
+{
+  "app_url": "http://android.localhost/",
+  "launch_container": "window",
+  "user_type": ["unmanaged", "managed", "child", "guest"],
+  "only_use_offline_manifest": true,
+  "offline_manifest": {
+    "name": "Android",
+    "start_url": "http://android.localhost/",
+    "scope": "http://android.localhost/",
+    "display": "standalone",
+    "icon_any_pngs": ["pinebook-android-192.png", "pinebook-android-512.png"],
+    "theme_color_argb_hex": "FF1E8E5A"
+  }
+}

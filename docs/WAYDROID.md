@@ -3,17 +3,20 @@
 The image includes [Waydroid](https://waydro.id): Android (LineageOS 20,
 Android 13) runs in a container on the ChromiumOS kernel, and each Android app
 opens in its own window on the ChromiumOS desktop. Everything is set up and
-controlled from one page, http://android.localhost, or from the `android`
-command in a shell.
+controlled from the **Android** app in the launcher (the page
+http://android.localhost), or from the `android` command in a shell.
 
-**Status:** the image builds with it, but it has not run on the Pinebook Pro
-yet (the image does not reach the login screen yet). See "What was checked"
-and "Not verified yet" below.
+**Status:** the image builds with it, and on the Pinebook Pro the service
+starts at login and serves the page. Android itself has not run on the laptop
+yet. See "What was checked" and "Not verified yet" below.
 
 ## Using it
 
-1. Log in. The service behind the page runs while someone is logged in.
-2. Open **http://android.localhost** in Chrome.
+1. Log in, as a user or as a guest. The service behind the page runs while
+   someone is logged in.
+2. Open **Android** in the launcher (the page http://android.localhost; typing
+   that address in Chrome opens the same page). Pin it to the shelf from its
+   context menu if you like.
 3. The first time, press **Set up Android**. Tick **With Google Play** first if
    you want Play (see below). Setting up:
    - adds an `ANDROID-DATA` partition in the free space at the end of the
@@ -30,10 +33,9 @@ and "Not verified yet" below.
    - **Install APK…**, or drop an `.apk` file on the page. If Android is
      stopped, it is started first;
    - **Stop**;
-   - **Open Android when this page opens**;
+   - **Open Android when this page opens** (on by default, so once Android
+     is set up, the launcher icon opens Android itself);
    - **Log**: the service's recent log.
-5. **Install as an app** (the button in the page header, or Chrome's menu)
-   puts the page in the launcher and on the shelf like any other app.
 
 Android stops when you log out and starts again from the page or the command.
 
@@ -133,10 +135,20 @@ Google only lets Play work on a registered device:
     origin, so it can be installed as an app. The API answers only with a
     localhost `Host` header, and changes need the `X-Android-Launcher` header
     and a matching `Origin`, so other web pages cannot use it.
+- **The launcher icon** is a web app Chrome installs for every profile, guests
+  included: `pinebook-android.json` in `/usr/share/google-chrome/extensions/web_apps`
+  (and the same under `/usr/share/chromium` for a Chromium build) describes the
+  page with an offline manifest, so it is installed without loading it. If the
+  icon is missing, `chrome://web-app-internals` lists the preinstalled configs
+  Chrome read and why one was skipped.
 - Android's session data lives under `/var/lib/waydroid/user` on `ANDROID-DATA`,
   not in a user's home.
 
 ## What was checked
+
+On the Pinebook Pro (guest session, SELinux enforcing): the `pinebook-android`
+job starts at login and the service listens on http://android.localhost; no
+SELinux denials so far.
 
 In the ChromiumOS SDK (stable branch): the kernel and every package build, and
 `build_image` makes the image. Its root partition has Waydroid, LXC and the

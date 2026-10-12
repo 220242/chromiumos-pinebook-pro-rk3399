@@ -27,7 +27,7 @@ name `pinebook-pro-rk3399` (`BOARD_NAME` in `../board.conf`).
 | `chromeos-base/chromeos-bsp-pinebook-pro-rk3399` | U-Boot boot script (`/boot/pinebook-pro/boot.scr`); depends on the firmware and U-Boot |
 | `sys-boot/pinebook-pro-u-boot` | Upstream U-Boot v2024.10, `pinebook-pro-rk3399_defconfig` + `files/chromiumos.config`, with TF-A v2.10.0 BL31 |
 | `sys-firmware/ap6256-firmware` | AP6256 (BCM43456) Wi-Fi firmware, CLM blob, NVRAM and Bluetooth patch, pinned Armbian commit |
-| `chromeos-base/pinebook-waydroid` | Android apps: the `pinebook-android` service (upstart, on login), the page http://android.localhost and the `android` command; see `docs/WAYDROID.md` |
+| `chromeos-base/pinebook-waydroid` | Android apps: the `pinebook-android` service (upstart, on login), the page http://android.localhost (preinstalled as the **Android** app in the launcher) and the `android` command; see `docs/WAYDROID.md` |
 | `app-containers/waydroid` | Waydroid 1.6.3 without systemd, AppArmor, seccomp or PyGObject (`files/gi` stands in for the parts of GLib it uses) |
 | `app-containers/lxc` | LXC 7.0.0 for Waydroid's container, without AppArmor, seccomp, SELinux or systemd |
 | `dev-libs/libglibutil`, `dev-libs/gbinder`, `dev-python/gbinder` | libgbinder and its Python module, Waydroid's binder client |

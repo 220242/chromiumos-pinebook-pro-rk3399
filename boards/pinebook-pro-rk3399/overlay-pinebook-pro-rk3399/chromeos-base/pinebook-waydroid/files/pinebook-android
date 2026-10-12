@@ -81,7 +81,6 @@ RUN_LOG_FILE = "/run/pinebook-android.log"
 WAYLAND_DIR = "/run/chrome"
 WAYLAND_DISPLAY = "wayland-0"
 STATEFUL = "/mnt/stateful_partition"
-WAYDROID_ICON = "/usr/share/icons/hicolor/512x512/apps/waydroid.png"
 WAYDROID_CONFIGS = "/usr/lib/waydroid/data/configs"
 # Which Waydroid's container configs ANDROID-DATA has (see configure_waydroid).
 CONFIGS_STAMP = WORK + "/.pinebook-android-configs"
@@ -1113,7 +1112,8 @@ CONTENT_TYPES = {
 }
 STATIC = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js",
           "/style.css": "style.css", "/manifest.webmanifest": "manifest.webmanifest",
-          "/sw.js": "sw.js", "/icon.svg": "icon.svg"}
+          "/sw.js": "sw.js", "/icon.svg": "icon.svg",
+          "/icon-192.png": "icon-192.png", "/icon-512.png": "icon-512.png"}
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self'; "
        "script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
 
@@ -1167,8 +1167,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send(404, "not found\n")
             extra = {"Content-Security-Policy": CSP} if name.endswith(".html") else {}
             return self.send(200, body, CONTENT_TYPES[os.path.splitext(name)[1]], extra)
-        if path == "/icon.png":
-            return self.send_file(WAYDROID_ICON, "/icon.svg")
         m = re.fullmatch(r"/icons/([A-Za-z0-9_.]+)\.png", path)
         if m and PACKAGE_RE.match(m.group(1)):
             return self.send_file(f"{ICONS_DIR}/{m.group(1)}.png")
