@@ -16,6 +16,13 @@ part uuid ${devtype} ${devnum}:${cros_part} cros_root_uuid
 load ${devtype} ${devnum}:${cros_part} ${kernel_addr_r} /boot/pinebook-pro/Image
 load ${devtype} ${devnum}:${cros_part} ${fdt_addr_r} /boot/pinebook-pro/rk3399-pinebook-pro.dtb
 
+# The ChromeOS kernel's Panfrost only binds to "arm,mali-t860-CHROMIUM" (the
+# plain compatibles are left to ARM's driver, which this board does not use).
+# Without the GPU driver Chrome cannot start and the boot logo stays.
+fdt addr ${fdt_addr_r}
+fdt resize 1024
+fdt set /gpu@ff9a0000 compatible "rockchip,rk3399-mali" "arm,mali-t860-CHROMIUM"
+
 # Bring-up: a task stuck for 30 s is reported (with its stack) instead of
 # panicking and rebooting after 120 s, so pinebook-boot-logs can save it.
 # printk.devkmsg=on: keep every message programs write to the kernel log;
