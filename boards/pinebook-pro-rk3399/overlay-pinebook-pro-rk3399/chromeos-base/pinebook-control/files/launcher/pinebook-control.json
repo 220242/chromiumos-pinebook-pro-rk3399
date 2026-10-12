@@ -1,0 +1,14 @@
+{
+  "app_url": "http://pinebook.localhost:8086/",
+  "launch_container": "window",
+  "user_type": ["unmanaged", "managed", "child", "guest"],
+  "only_use_offline_manifest": true,
+  "offline_manifest": {
+    "name": "Pinebook",
+    "start_url": "http://pinebook.localhost:8086/",
+    "scope": "http://pinebook.localhost:8086/",
+    "display": "standalone",
+    "icon_any_pngs": ["pinebook-control-192.png", "pinebook-control-512.png"],
+    "theme_color_argb_hex": "FF2F6FDE"
+  }
+}

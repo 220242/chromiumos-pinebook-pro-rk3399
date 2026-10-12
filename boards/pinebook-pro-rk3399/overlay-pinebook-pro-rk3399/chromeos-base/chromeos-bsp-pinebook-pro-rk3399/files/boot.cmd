@@ -20,8 +20,18 @@ load ${devtype} ${devnum}:${cros_part} ${fdt_addr_r} /boot/pinebook-pro/rk3399-p
 # plain compatibles are left to ARM's driver, which this board does not use).
 # Without the GPU driver Chrome cannot start and the boot logo stays.
 fdt addr ${fdt_addr_r}
-fdt resize 1024
+fdt resize 8192
 fdt set /gpu@ff9a0000 compatible "rockchip,rk3399-mali" "arm,mali-t860-CHROMIUM"
+
+# CPU overclock / undervolt from the Pinebook app: it writes
+# pinebook-tune.scr (fdt commands for the OPP tables) to EFI-SYSTEM
+# (partition 12 = 0xc). Delete that file, from any computer, to boot with the
+# stock frequencies and voltages again. Loaded at ramdisk_addr_r: there is no
+# initrd, and scriptaddr still holds this script.
+if load ${devtype} ${devnum}:c ${ramdisk_addr_r} pinebook-tune.scr; then
+	echo "Applying pinebook-tune.scr"
+	source ${ramdisk_addr_r}
+fi
 
 # Bring-up: a task stuck for 30 s is reported (with its stack) instead of
 # panicking and rebooting after 120 s, so pinebook-boot-logs can save it.

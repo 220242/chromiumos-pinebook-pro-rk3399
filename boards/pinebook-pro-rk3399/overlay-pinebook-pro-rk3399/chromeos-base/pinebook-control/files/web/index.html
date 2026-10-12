@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinebook</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <img src="icon.svg" alt="" width="28" height="28">
+  <h1>Pinebook</h1>
+  <nav>
+    <button class="tab active" data-tab="monitor">Мониторинг</button>
+    <button class="tab" data-tab="settings">Настройки</button>
+  </nav>
+  <button id="overlay" title="Маленькое окно поверх всех окон">Оверлей</button>
+</header>
+
+<main>
+<section id="monitor" class="page">
+  <div class="grid">
+    <div class="card">
+      <h2>Процессор <span id="cpu-load" class="badge"></span></h2>
+      <div id="cpu"></div>
+    </div>
+    <div class="card">
+      <h2>Видеоядро Mali-T860</h2>
+      <div id="gpu"></div>
+    </div>
+    <div class="card">
+      <h2>Температура</h2>
+      <div id="temps"></div>
+    </div>
+    <div class="card">
+      <h2>Питание</h2>
+      <div id="power"></div>
+    </div>
+    <div class="card">
+      <h2>Аппаратное ускорение</h2>
+      <div id="accel"></div>
+    </div>
+    <div class="card">
+      <h2>Память</h2>
+      <div id="memory"></div>
+    </div>
+  </div>
+</section>
+
+<section id="settings" class="page" hidden>
+  <div class="card">
+    <h2>Режим работы</h2>
+    <p class="hint">Применяется сразу и сохраняется после перезагрузки.</p>
+    <div id="profiles" class="segmented"></div>
+    <div id="custom" class="form" hidden>
+      <label>Cortex-A53, максимум <select id="little_max"></select></label>
+      <label>Cortex-A72, максимум <select id="big_max"></select></label>
+      <label>Регулятор CPU <select id="cpu_governor"></select></label>
+      <label>GPU, максимум <select id="gpu_max"></select></label>
+      <label>Регулятор GPU <select id="gpu_governor"></select></label>
+    </div>
+    <p id="applied" class="hint"></p>
+  </div>
+
+  <div class="card warn">
+    <h2>Разгон и андервольтинг</h2>
+    <p class="hint">Меняет таблицы частот и напряжений в загрузчике, работает
+      после перезагрузки. Если ноутбук после этого не загружается или
+      зависает, удали файл <code>pinebook-tune.scr</code> с раздела
+      EFI-SYSTEM карты (виден в Windows) — вернутся заводские значения.</p>
+    <div class="form">
+      <label>Разгон
+        <select id="overclock">
+          <option value="off">Выключен (A53 1416 МГц, A72 1800 МГц)</option>
+          <option value="mild">Умеренный (A53 1512 МГц, A72 1992 МГц)</option>
+          <option value="strong">Сильный (A53 1608 МГц, A72 2088 МГц)</option>
+        </select>
+      </label>
+      <label>Андервольтинг CPU <select id="cpu_undervolt_mv"></select></label>
+      <label>Андервольтинг GPU <select id="gpu_undervolt_mv"></select></label>
+    </div>
+    <button id="tune-apply" class="primary">Сохранить для следующей загрузки</button>
+    <p id="tune-state" class="hint"></p>
+    <details>
+      <summary>Таблицы частот</summary>
+      <div id="tables"></div>
+    </details>
+  </div>
+</section>
+</main>
+
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

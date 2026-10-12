@@ -1,0 +1,10 @@
+# The Pinebook Pro has no TPM. Without /dev/tpm0 trunksd aborts at start
+# ("Error initializing TPM communication") and leaves a crash report every
+# boot; like on ChromeOS Flex machines without a TPM, it just stays stopped.
+# tpm_managerd and the rest run with the insecure fallback as before.
+pre-start script
+  if [ ! -e /dev/tpm0 ]; then
+    stop
+    exit 0
+  fi
+end script

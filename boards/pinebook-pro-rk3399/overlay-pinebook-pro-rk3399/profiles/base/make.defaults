@@ -39,3 +39,9 @@ USE="${USE} -encrypted_stateful"
 # this, chromeos_startup opens /dev/tpm0 to extend a PCR and the TPM library
 # exits the process with status 1 when the device is missing (boot loop).
 USE="${USE} tpm_insecure_fallback"
+
+# Linux development environment (Crostini). The kernel has KVM (the boot
+# ROM hands over at EL2: "Hyp mode initialized") and vhost-vsock; kvm_host
+# adds crosvm, vm_concierge and the Termina VM image (termina-dlc, preloaded
+# by build_image).
+USE="${USE} kvm_host"
