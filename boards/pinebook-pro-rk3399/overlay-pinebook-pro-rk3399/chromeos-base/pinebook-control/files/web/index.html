@@ -65,6 +65,24 @@
   </div>
 
   <div class="card">
+    <h2>Вход в аккаунт Google</h2>
+    <p class="hint">Сборке Chromium нужны свои ключи Google API. Впиши их и выйди из
+      сеанса: Chrome запустится заново уже с ними. Вместо этого можно положить
+      файл <code>google-api-keys.txt</code> со строками
+      <code>GOOGLE_API_KEY=…</code>, <code>GOOGLE_DEFAULT_CLIENT_ID=…</code>,
+      <code>GOOGLE_DEFAULT_CLIENT_SECRET=…</code> на EFI-SYSTEM.</p>
+    <p id="keys-state" class="hint"></p>
+    <div class="form">
+      <label>Ключ API <input id="api_key" autocomplete="off" spellcheck="false"></label>
+      <label>Client ID <input id="client_id" autocomplete="off" spellcheck="false"
+        placeholder="…apps.googleusercontent.com"></label>
+      <label>Client secret <input id="client_secret" type="password" autocomplete="off"></label>
+    </div>
+    <button id="keys-save" class="primary">Сохранить ключи</button>
+    <button id="keys-clear">Удалить</button>
+  </div>
+
+  <div class="card">
     <h2>Логи загрузки</h2>
     <label class="row"><span>Сохранять логи каждой загрузки в logs/ на EFI-SYSTEM</span>
       <input type="checkbox" id="boot-logs"></label>

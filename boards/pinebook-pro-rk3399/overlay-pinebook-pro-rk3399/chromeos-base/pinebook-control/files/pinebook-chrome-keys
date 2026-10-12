@@ -1,0 +1,68 @@
+#!/bin/bash
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+#
+# Google API keys for Chrome, so it can sign in to Google accounts: a
+# Chromium build has none of its own ("OAuth2 token fetch failed").
+#
+# Reads, in this order, the first that exists:
+#   google-api-keys.txt in the root of the boot card's EFI-SYSTEM partition
+#     (easy to create from Windows);
+#   /var/lib/pinebook-control/google-api-keys.conf (written by the Pinebook
+#     app).
+# Each holds lines NAME=VALUE for GOOGLE_API_KEY, GOOGLE_DEFAULT_CLIENT_ID and
+# GOOGLE_DEFAULT_CLIENT_SECRET; anything else is ignored. The upstart job
+# pinebook-chrome-keys runs this before every start of the ui job: it puts
+# /etc/chrome_dev.conf plus these lines in /run and bind-mounts that copy over
+# /etc/chrome_dev.conf, where session_manager reads Chrome's environment.
+
+set -u
+DEV_CONF=/etc/chrome_dev.conf
+RUN=/run/pinebook-control
+OUT=${RUN}/chrome_dev.conf
+SAVED=/var/lib/pinebook-control/google-api-keys.conf
+
+log() { logger -t pinebook-chrome-keys "$*"; }
+
+# Back to the original file first (ui restarts run this again).
+while grep -q " ${DEV_CONF} " /proc/mounts; do
+	umount "${DEV_CONF}" || break
+done
+
+keys=""
+read_keys() { # read_keys FILE: the allowed NAME=VALUE lines, CR stripped
+	tr -d '\r' < "$1" | grep -E '^(GOOGLE_API_KEY|GOOGLE_DEFAULT_CLIENT_ID|GOOGLE_DEFAULT_CLIENT_SECRET)=[A-Za-z0-9._-]+$'
+}
+
+disk=$(rootdev -s -d 2>/dev/null)
+if [[ -n ${disk} ]]; then
+	case ${disk} in
+	*[0-9]) esp=${disk}p12 ;;
+	*) esp=${disk}12 ;;
+	esac
+	mnt=$(mktemp -d)
+	if mount -t vfat -o ro,nosuid,nodev,noexec "${esp}" "${mnt}" 2>/dev/null; then
+		for f in "${mnt}"/google-api-keys.txt "${mnt}"/GOOGLE-API-KEYS.TXT; do
+			if [[ -f ${f} ]]; then
+				keys=$(read_keys "${f}")
+				log "Keys from EFI-SYSTEM/google-api-keys.txt"
+				break
+			fi
+		done
+		umount "${mnt}"
+	fi
+	rmdir "${mnt}"
+fi
+if [[ -z ${keys} && -f ${SAVED} ]]; then
+	keys=$(read_keys "${SAVED}")
+	log "Keys from ${SAVED}"
+fi
+if [[ -z ${keys} ]]; then
+	exit 0
+fi
+
+mkdir -p "${RUN}"
+{ cat "${DEV_CONF}"; echo; echo "# Added by pinebook-chrome-keys"; echo "${keys}"; } > "${OUT}"
+chmod 0644 "${OUT}"
+chcon --reference="${DEV_CONF}" "${OUT}" 2>/dev/null
+mount --bind "${OUT}" "${DEV_CONF}" && log "Chrome gets $(echo "${keys}" | wc -l) Google API key lines"
