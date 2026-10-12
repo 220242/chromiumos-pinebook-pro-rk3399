@@ -22,7 +22,7 @@ REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 
 # rootdev finds the boot card's EFI-SYSTEM partition.
 RDEPEND="${PYTHON_DEPS}
-	chromeos-base/rootdev
+	sys-apps/rootdev
 "
 
 src_install() {
