@@ -41,11 +41,13 @@ src_install() {
 	# readable from Windows (install-u-boot.sh gives EFI-SYSTEM the Basic data
 	# type).
 	dosbin "${FILESDIR}/pinebook-boot-logs"
+	# On VT2: sudo pinebook-collect (logs and hardware state to FAT).
+	dosbin "${FILESDIR}/pinebook-collect"
 	insinto /etc/init
 	doins "${FILESDIR}/pinebook-boot-logs.conf"
 
-	# Bring-up: chromeos_startup exits with status 1 without logging why; run
-	# it under strace (startup.override replaces the exec line of startup.conf).
+	# Bring-up: run chromeos_startup under strace by installing
+	# files/startup.override (not installed now that it boots; the TPM fix
+	# came from such a trace).
 	dosbin "${FILESDIR}/pinebook-startup-trace"
-	doins "${FILESDIR}/startup.override"
 }
