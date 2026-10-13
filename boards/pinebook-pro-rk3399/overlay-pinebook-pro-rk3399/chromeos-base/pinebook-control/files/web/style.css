@@ -55,3 +55,8 @@ canvas { width: 100%; display: block; }
 .rails div { break-inside: avoid; padding: 2px 0; border-bottom: 1px solid var(--bar); }
 .rails .off { color: var(--muted); }
 .warnline { color: var(--warm); }
+.layout { display: flex; height: 22px; border-radius: 6px; overflow: hidden; margin: 8px 0 4px; }
+.layout div { display: flex; align-items: center; justify-content: center; font-size: 11px;
+              color: #fff; white-space: nowrap; overflow: hidden; min-width: 2px; }
+.layout .sys { background: #6b7785; } .layout .state { background: var(--accent); }
+.layout .android { background: var(--ok); } .layout .free { background: var(--bar); color: var(--muted); }

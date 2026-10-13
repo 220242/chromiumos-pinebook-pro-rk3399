@@ -1201,13 +1201,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
         if body.get("target") is None:
             return self.send_json(migrate_cmd("cancel"))
+        opts = json.dumps(body.get("options") or {})
+        if body.get("preview"):
+            return self.send_json(migrate_cmd("preview", "--target", str(body["target"]),
+                                              "--options", opts))
         if body.get("erase_confirmed") is not True:
             return self.send_json({"error": "erase not confirmed"}, 400)
         if not migrate_info()["power_ok"]:
             return self.send_json({"error": "Подключи зарядку: копирование "
                                    "займёт несколько минут"}, 400)
         log.info("Moving the system to %s at the next boot", body["target"])
-        return self.send_json(migrate_cmd("schedule", "--target", str(body["target"])))
+        return self.send_json(migrate_cmd("schedule", "--target", str(body["target"]),
+                                          "--options", opts))
 
 
 class Server(http.server.ThreadingHTTPServer):

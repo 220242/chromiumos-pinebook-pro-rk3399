@@ -227,6 +227,63 @@ async function loadMigrate() {
     (m.markers || []).length ? `Система уже перенесена (${m.markers.join(", ")} на этой карте).` :
     `Система загружена с ${m.booted_from || "?"}.` + (m.power_ok ? "" : " Подключи зарядку перед переносом.");
   $("migrate-log").textContent = m.log || "Ещё не запускался.";
+  if (ts.length) previewMigrate();
+}
+
+let lastPreview = null;
+
+function migTarget() {
+  const sel = document.querySelector("input[name=migrate-target]:checked");
+  return sel ? sel.value : null;
+}
+
+function migOptions() {
+  const clean = $("mig-mode").value === "clean";
+  return {
+    mode: $("mig-mode").value,
+    android_gb: Math.max(0, Number($("mig-android").value) || 0),
+    copy_android: !clean && $("mig-copy-android").checked,
+    switch_boot: $("mig-switch").checked,
+    reboot: $("mig-reboot").checked,
+  };
+}
+
+function renderLayout(p) {
+  if (p.error) { $("mig-layout").innerHTML = `<p class="hint warnline">${esc(p.error)}</p>`; return; }
+  const sysMb = p.partitions.filter((x) => !["STATE", "ANDROID-DATA"].includes(x.name))
+    .reduce((a, x) => a + x.mb, 0);
+  const total = p.disk_mb;
+  const seg = (cls, mb, label) => mb > 0 ?
+    `<div class="${cls}" style="flex:${mb}" title="${esc(label)}">${esc(label)}</div>` : "";
+  const gb = (mb) => (mb / 1024).toFixed(1) + " ГБ";
+  $("mig-layout").innerHTML =
+    `<div class="layout">${seg("sys", sysMb, "система")}${seg("state", p.state_mb, "ChromeOS " + gb(p.state_mb))}` +
+    seg(p.android_copied ? "android" : "free", p.android_mb,
+        (p.android_copied ? "Android " : "свободно для Android ") + gb(p.android_mb)) + `</div>` +
+    kv([
+      ["Диск", gb(total)],
+      ["Система (ядра, корень, загрузчик)", gb(sysMb)],
+      ["Данные ChromeOS", `${gb(p.state_mb)}${p.state_used_mb != null ? `, сейчас занято ${gb(p.state_used_mb)}` : ""}`],
+      ["Android", p.android_mb ? (p.android_copied ? `${gb(p.android_mb)}, данные переносятся` +
+        (p.android_used_mb != null ? ` (занято ${gb(p.android_used_mb)})` : "") :
+        `${gb(p.android_mb)} свободно: Android создаст раздел при первом запуске`) : "нет места: Android не запустится"],
+      ["Максимум под Android", gb(p.max_android_gb * 1024)],
+    ]) + (p.problems.length ? `<p class="hint warnline">${p.problems.map(esc).join("<br>")}</p>` : "");
+  lastPreview = p;
+}
+
+async function previewMigrate() {
+  const t = migTarget();
+  if (!t) return;
+  try {
+    const p = await fetch("/api/migrate", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Pinebook": "1" },
+      body: JSON.stringify({ target: t, preview: true, options: migOptions() }),
+    }).then((x) => x.json());
+    renderLayout(p);
+  } catch (e) {
+    $("mig-layout").textContent = e.message;
+  }
 }
 
 async function postMigrate(body, done) {
@@ -490,13 +547,35 @@ $("profiles").addEventListener("click", (e) => {
   $(id).addEventListener("change", () => save(customBody(), () => "Применено")));
 
 $("migrate-go").addEventListener("click", () => {
-  const sel = document.querySelector("input[name=migrate-target]:checked");
-  if (!sel) return;
+  const t = migTarget();
+  if (!t) return;
   if (!$("migrate-confirm").checked) { toast("Поставь галочку подтверждения"); return; }
-  if (!confirm(`Всё на ${sel.value} будет стёрто, и туда будет скопирована эта система. Продолжить?`)) return;
-  postMigrate({ target: sel.value, erase_confirmed: true },
-    "Готово: перенос начнётся при следующей загрузке. Перезагрузи ноутбук.");
+  const o = migOptions();
+  const what = o.mode === "clean" ? "чистая система (без аккаунтов и данных)" : "эта система со всеми данными";
+  if (!confirm(`Всё на ${t} будет стёрто, и туда будет скопирована ${what}. Продолжить?`)) return;
+  postMigrate({ target: t, erase_confirmed: true, options: o },
+    o.reboot ? "Готово: перенос начнётся при следующей загрузке. Перезагрузи ноутбук."
+             : "Готово: копия будет сделана при следующей загрузке, потом загрузка продолжится с карты.");
 });
+
+$("mig-preview").addEventListener("click", previewMigrate);
+["mig-mode", "mig-android", "mig-copy-android"].forEach((id) =>
+  $(id).addEventListener("change", () => {
+    $("mig-copy-android").disabled = $("mig-mode").value === "clean";
+    previewMigrate();
+  }));
+$("mig-presets").addEventListener("click", (e) => {
+  const v = e.target.dataset.android;
+  if (v == null) return;
+  if (v === "half") {
+    const p = lastPreview;
+    $("mig-android").value = p ? Math.floor((p.disk_mb / 1024 - 2.5) / 2) : 25;
+  } else {
+    $("mig-android").value = v;
+  }
+  previewMigrate();
+});
+$("migrate-targets").addEventListener("change", previewMigrate);
 $("migrate-cancel").addEventListener("click", () => postMigrate({ target: null }, "Перенос отменён"));
 $("migrate-reboot").addEventListener("click", () => {
   if (confirm("Перезагрузить ноутбук сейчас?")) postMigrate({ reboot: true }, "Перезагрузка…");
