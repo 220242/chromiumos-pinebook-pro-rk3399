@@ -61,7 +61,10 @@ src_configure() {
 		-Ddata-path=/var/lib/lxc
 		-Ddoc-path="/usr/share/doc/${PF}"
 		-Dlog-path=/var/log/lxc
-		-Drootfs-mount-path=/var/lib/lxc/rootfs
+		# LXC mounts the container's root here while starting it. Not under
+		# /var: ChromiumOS's /var is on the stateful partition, so a directory
+		# the image installs there does not exist at run time.
+		-Drootfs-mount-path=/usr/lib/lxc/rootfs
 		-Druntime-path=/run
 	)
 	meson_src_configure
@@ -74,4 +77,6 @@ src_install() {
 	# privileged container and does not use it.
 	rm "${ED}/usr/libexec/lxc/lxc-user-nic" || die
 	find "${ED}" \( -name '*.la' -o -name '*.a' \) -delete || die
+
+	keepdir /usr/lib/lxc/rootfs
 }
