@@ -713,6 +713,18 @@ def tail(path, lines=200):
         return []
 
 
+def log_waydroid_tail(lines=80):
+    """Copies the end of Waydroid's own log (on ANDROID-DATA, where LXC's
+    errors go) into this service's log, which the boot logs on the card's
+    FAT partition include."""
+    text = tail(WORK + "/waydroid.log", lines)
+    if text:
+        log.info("--- last %d lines of %s/waydroid.log ---", len(text), WORK)
+        for line in text:
+            log.info("| %s", line.rstrip("\n"))
+        log.info("--- end of waydroid.log ---")
+
+
 def write_file(path, data, mode=0o644):
     with open(path + ".new", "w") as f:
         f.write(data)
@@ -812,9 +824,11 @@ class Android:
                 self.end(notice=notice)
             except Failure as e:
                 log.error("%s failed: %s", name, e)
+                log_waydroid_tail()
                 self.end(error={"code": e.code, "detail": e.detail})
             except Exception as e:  # pylint: disable=broad-except
                 log.exception("%s failed", name)
+                log_waydroid_tail()
                 self.end(error={"code": "internal", "detail": repr(e)})
 
         threading.Thread(target=body, name=name, daemon=True).start()
