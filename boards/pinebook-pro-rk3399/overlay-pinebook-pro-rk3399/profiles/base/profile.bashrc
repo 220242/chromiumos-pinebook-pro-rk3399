@@ -57,3 +57,42 @@ cros_post_src_install_pinebook_pro_kernel_boot_files() {
 	newins "${build_dir}/arch/arm64/boot/Image" Image
 	doins "${dtb}"
 }
+
+# minigbm (media-libs/minigbm): add a backend for the Panfrost render node,
+# minigbm/panfrost.c. Chrome creates its GBM device on the first render
+# node, which on this board is Panfrost's (rockchipdrm has none); without a
+# backend for it there was no hardware video decoding, and ozone and the
+# camera service fell back to dumb buffers.
+_pinebook_pro_is_minigbm() {
+	[[ ${CATEGORY} == "media-libs" && ${PN} == "minigbm" ]]
+}
+
+cros_pre_src_prepare_pinebook_pro_minigbm_panfrost() {
+	_pinebook_pro_is_minigbm || return 0
+	# minigbm is built out of tree from the read-only source checkout: build a
+	# private copy (without .git) that has panfrost.c and the patched drv.c.
+	local src="${WORKDIR}/minigbm-pinebook-pro"
+	if [[ ${S} != "${src}" ]]; then
+		einfo "pinebook-pro: building minigbm from a copy with the panfrost backend"
+		rm -rf "${src}"
+		mkdir -p "${src}" || die
+		tar -C "${S}" --exclude=.git -cf - . | tar -C "${src}" -xf - \
+			|| die "pinebook-pro: copying the minigbm sources"
+		S="${src}"
+		cd "${S}" || die
+	fi
+	cp "${PINEBOOK_PRO_OVERLAY}/minigbm/panfrost.c" "${S}/panfrost.c" \
+		|| die "pinebook-pro: copying panfrost.c"
+	grep -q 'backend_panfrost' "${S}/drv.c" && return 0
+	sed -i \
+		-e '/^extern const struct backend backend_vkms;$/a #ifdef DRV_PANFROST\nextern const struct backend backend_panfrost;\n#endif' \
+		-e 's/^\t&backend_evdi,/#ifdef DRV_PANFROST\n\t\&backend_panfrost,\n#endif\n&/' \
+		"${S}/drv.c" || die "pinebook-pro: patching drv.c"
+	grep -q '&backend_panfrost,' "${S}/drv.c" \
+		|| die "pinebook-pro: drv.c did not take the panfrost backend"
+}
+
+cros_pre_src_configure_pinebook_pro_minigbm_panfrost() {
+	_pinebook_pro_is_minigbm || return 0
+	append-cppflags -DDRV_PANFROST
+}
