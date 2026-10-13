@@ -9,13 +9,14 @@ and the `android` command. The upstart job pinebook-android starts it when a
 user logs in. It does everything Waydroid needs on ChromiumOS:
 
 setup   On first use, adds an ANDROID-DATA partition (ext4) in the free space
-        after the ChromiumOS partitions of the card the system booted from and
+        after the ChromiumOS partitions of the disk the system runs from (the
+        microSD card, or the eMMC or NVMe drive the owner moved it to) and
         mounts it at /var/lib/waydroid, Waydroid's work directory. Android's
         system images and its /data live there: the stateful partition is
         small and mounted noexec. Existing partitions are not changed; only a
-        GPT entry is added and the backup GPT moves to the end of the card.
-        If the card was reflashed with the same layout, the partition's file
-        system is found again and kept. The eMMC is never touched.
+        GPT entry is added and the backup GPT moves to the end of the disk.
+        If the disk was reflashed with the same layout, the partition's file
+        system is found again and kept. Other disks are never touched.
         Then downloads Android (LineageOS) with `waydroid init`.
 start   Starts Waydroid's container service (root), a private D-Bus session
         bus and `waydroid session start` as chronos, drawing on Chrome's
@@ -162,16 +163,16 @@ def stateful_device():
 
 
 def boot_disk():
-    """The disk the system runs from, e.g. mmcblk1, refusing the eMMC."""
+    """The disk the system runs from: the one holding the stateful
+    partition, e.g. mmcblk1 for the microSD card. After the system is moved
+    to the eMMC (mmcblk2) or an NVMe drive with the Pinebook app, that disk
+    is ChromiumOS's own and Android goes there too; a card left in the slot
+    is not used."""
     part = stateful_device()
     sys_part = os.path.realpath(f"/sys/class/block/{part}")
     if not os.path.exists(sys_part + "/partition"):
         raise Failure("no_disk", f"{part} is not a partition")
-    disk = os.path.basename(os.path.dirname(sys_part))
-    # The Pinebook Pro's eMMC (MMC, not SD) holds the owner's other system.
-    if read_file(f"/sys/block/{disk}/device/type") == "MMC":
-        raise Failure("emmc", f"/dev/{disk} is the eMMC")
-    return disk
+    return os.path.basename(os.path.dirname(sys_part))
 
 
 def disk_partitions(disk):

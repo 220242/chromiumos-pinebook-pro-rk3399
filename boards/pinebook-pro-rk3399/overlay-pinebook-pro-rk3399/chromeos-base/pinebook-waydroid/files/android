@@ -40,8 +40,7 @@ STEPS = {
 
 ERRORS = {
     "no_disk": "Could not tell which disk the system runs from.",
-    "emmc": "The system runs from the eMMC; Android is only set up on a microSD card.",
-    "no_space": "Not enough free space on the card after ChromiumOS (4 GB or more is needed).",
+    "no_space": "Not enough free space on the system disk after ChromiumOS (4 GB or more is needed).",
     "gpt": "Could not add the ANDROID-DATA partition.",
     "fsck": "The ANDROID-DATA file system has errors e2fsck could not fix.",
     "unsupported": "This image lacks what Android needs.",
@@ -152,7 +151,7 @@ def confirm_setup(status, yes):
     if setup.get("error"):
         raise ServiceError(describe(setup["error"]))
     if setup.get("has_partition") or setup.get("has_data"):
-        print("Android will use the ANDROID-DATA partition already on the card, "
+        print("Android will use the ANDROID-DATA partition already on the system disk, "
               "with the apps and data from before.")
     else:
         free = setup.get("free_bytes", 0)

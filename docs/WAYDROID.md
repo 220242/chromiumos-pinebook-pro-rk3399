@@ -62,7 +62,8 @@ Android's system images and its data (apps, their files, settings) are on a
 partition of their own, mounted at `/var/lib/waydroid`. The stateful partition
 is too small for them and mounted `noexec`.
 
-- It is created on the microSD card the system booted from, after the image's
+- It is created on the disk the system runs from (the microSD card, or the
+  eMMC or NVMe drive after the system is moved there), after the image's
   last partition, in all the free space that is left. At least 4 GB must be
   free: write the image to a card of 16 GB or more.
 - On the first boot from a big card, `pinebook-grow-stateful` grows STATE
@@ -73,8 +74,10 @@ is too small for them and mounted `noexec`.
 - Only a GPT entry is added (partition 13, ext4, label `ANDROID-DATA`) and the
   backup GPT is moved to the end of the card. The ChromiumOS partitions stay
   as they are.
-- It is never created on the eMMC: when the system runs from the eMMC, the page
-  says so and does nothing.
+- Moving the system to the eMMC or an NVMe drive with the Pinebook app copies
+  ANDROID-DATA along with the other partitions, and Android goes on from
+  there; a card left in the slot is not used. If there was no ANDROID-DATA
+  yet, setup creates it in the free space at the end of the new disk.
 - Writing a new image of the **same size** to the card keeps Android and its
   apps: the partition's file system is still there after the image. The page
   then offers to use it, and **Set up Android** only adds the partition back
@@ -174,8 +177,8 @@ In a cloud container, without a ChromiumOS checkout or the hardware:
   (container and session services, signals, threads); its `KeyFile` writes
   the same `.desktop` files as GLib's.
 - Partitioning, on card images with the real disk layout: ANDROID-DATA is
-  added after the image, the backup GPT moves, the eMMC is refused, and
-  rewriting the same image keeps the data.
+  added after the image, the backup GPT moves, and rewriting the same image
+  keeps the data.
 - The page (in Chromium, Russian and English) and the `android` command
   against the service with a stand-in for Waydroid: setup with download
   progress, start, the app list, APK install (also while stopped), a file
