@@ -14,6 +14,8 @@
   <h1>Pinebook</h1>
   <nav>
     <button class="tab active" data-tab="monitor">Мониторинг</button>
+    <button class="tab" data-tab="power">Питание</button>
+    <button class="tab" data-tab="hardware">Железо</button>
     <button class="tab" data-tab="settings">Настройки</button>
   </nav>
   <button id="overlay" title="Маленькое окно поверх всех окон">Оверлей</button>
@@ -47,6 +49,44 @@
       <div id="memory"></div>
     </div>
   </div>
+</section>
+
+<section id="power" class="page" hidden>
+  <div class="grid">
+    <div class="card wide">
+      <h2>За последние 3 часа</h2>
+      <canvas id="chart" height="160"></canvas>
+      <p class="hint" id="chart-legend"></p>
+    </div>
+    <div class="card">
+      <h2>Батарея</h2>
+      <div id="battery"></div>
+    </div>
+    <div class="card">
+      <h2>Зарядка</h2>
+      <div id="charger"></div>
+    </div>
+    <div class="card">
+      <h2>Управление</h2>
+      <div id="power-controls" class="form"></div>
+      <p class="hint">Применяется сразу и сохраняется после перезагрузки.</p>
+    </div>
+    <div class="card">
+      <h2>Сон</h2>
+      <div id="sleep"></div>
+    </div>
+    <div class="card wide">
+      <h2>Шины питания (PMIC RK808 и преобразователи)</h2>
+      <p class="hint">Напряжения и потребители каждой шины. Регулировать их
+        напрямую ядро не даёт; напряжения ядер CPU и GPU меняются через
+        разгон и андервольтинг в «Настройках».</p>
+      <div id="rails"></div>
+    </div>
+  </div>
+</section>
+
+<section id="hardware" class="page" hidden>
+  <div class="grid" id="hw"></div>
 </section>
 
 <section id="settings" class="page" hidden>

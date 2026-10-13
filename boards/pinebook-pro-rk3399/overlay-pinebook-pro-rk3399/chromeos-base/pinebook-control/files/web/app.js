@@ -231,13 +231,219 @@ function customBody() {
   };
 }
 
+// --- Power ---------------------------------------------------------------------
+
+const LED_NAMES = { "green:power": "Зелёный индикатор", "red:standby": "Красный индикатор" };
+const LED_MODES = {
+  on: "Горит", off: "Не горит", heartbeat: "Пульс", timer: "Мигает", cpu: "Загрузка CPU",
+  mmc1: "Активность microSD", mmc2: "Активность eMMC", phy0tx: "Передача Wi-Fi",
+  "default-on": "Горит (по умолчанию)", panic: "Только при сбое ядра",
+};
+const SLEEP_NAMES = {
+  s2idle: "Лёгкий (s2idle): быстро просыпается, разряжает батарею быстрее",
+  deep: "Глубокий (deep): экономнее, экспериментально",
+  shallow: "Неглубокий (shallow)",
+};
+
+let power = null;
+let history = [];
+
+const kv = (rows) => `<dl class="kv">${rows.filter((r) => r && r[1] != null && r[1] !== "")
+  .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>`;
+const num = (v) => (v == null || v === "" ? null : Number(v));
+
+function renderPower() {
+  const sup = power.supplies || {};
+  const b = sup["cw2015-battery"] || {};
+  const st = { Charging: "заряжается", Discharging: "от батареи", Full: "заряжен",
+               "Not charging": "не заряжается" }[b.status] || b.status;
+  const w = last && last.battery && last.battery.est_watts;
+  $("battery").innerHTML = kv([
+    ["Заряд", b.capacity != null ? `${b.capacity}% (${st})` : null],
+    ["Напряжение", num(b.voltage_now) ? (num(b.voltage_now) / 1e6).toFixed(3) + " В" : null],
+    ["Запас", num(b.charge_now) ? `${Math.round(num(b.charge_now) / 1000)} из ${Math.round(num(b.charge_full) / 1000)} мА·ч` : null],
+    ["Ёмкость по паспорту", num(b.charge_full_design) ? Math.round(num(b.charge_full_design) / 1000) + " мА·ч" : null],
+    ["Диапазон напряжений", num(b.voltage_min_design) ? `${(num(b.voltage_min_design) / 1e6).toFixed(2)}–${(num(b.voltage_max_design) / 1e6).toFixed(2)} В` : null],
+    ["Осталось", num(b.time_to_empty_now) ? `${Math.floor(num(b.time_to_empty_now) / 3600)} ч ${Math.round(num(b.time_to_empty_now) % 3600 / 60)} мин` : null],
+    ["Потребление", w != null ? `≈ ${w.toFixed(1)} Вт` : "оценивается только от батареи"],
+    ["Тип", b.technology],
+  ]) + `<p class="hint">Датчик CW2015 не измеряет ток: расход оценивается по скорости разряда.</p>`;
+
+  const dc = sup["dc-charger"] || {};
+  const tcpm = Object.entries(sup).find(([k]) => k.startsWith("tcpm-source"));
+  const t = tcpm ? tcpm[1] : {};
+  const u = power.usb_c;
+  $("charger").innerHTML = kv([
+    ["Разъём питания (DC)", dc.online === "1" ? "подключён" : "не подключён"],
+    ["USB-C", u ? (u.partner ? "подключено устройство" : "пусто") : "нет данных"],
+    ["Роль USB-C", u && u.partner ? `питание: ${u.power_role === "sink" ? "заряжается от него" : "питает его"}, данные: ${u.data_role}` : null],
+    ["Режим", u && u.partner ? u.power_operation_mode : null],
+    ["Договорено", t.online === "1" ? `${(num(t.voltage_now) / 1e6).toFixed(1)} В, до ${(num(t.current_max) / 1e6).toFixed(1)} А (${t.usb_type || ""})` : null],
+  ]) + (u && u.pdos.length ? `<h3>Что предлагает зарядка (PD)</h3>` + kv(u.pdos.map((p) => [
+    p.type.replace("_", " "),
+    p.min_mv ? `${p.min_mv / 1000}–${p.mv / 1000} В, ${p.ma / 1000} А` : `${p.mv / 1000} В × ${p.ma / 1000} А = ${(p.mv * p.ma / 1e6).toFixed(0)} Вт`,
+  ])) : "");
+
+  const s = power.settings || {};
+  const leds = power.leds.map((l) => {
+    const modes = ["on", "off", ...l.triggers.filter((x) => x !== "none" && LED_MODES[x])];
+    const cur = s.leds && s.leds[l.name] ? s.leds[l.name] :
+      (l.trigger === "none" ? (l.brightness ? "on" : "off") : l.trigger);
+    return `<label>${esc(LED_NAMES[l.name] || l.name)}
+      <select data-led="${esc(l.name)}">${[...new Set([...modes, cur])].map((m) =>
+        `<option value="${esc(m)}" ${m === cur ? "selected" : ""}>${esc(LED_MODES[m] || m)}</option>`).join("")}</select></label>`;
+  }).join("");
+  const cpus = Object.entries(power.cpus_online || {}).map(([n, on]) =>
+    `<label><span>Ядро ${n} (${Number(n) >= 4 ? "A72" : "A53"})</span>
+      <input type="checkbox" data-cpu="${n}" ${on ? "checked" : ""}></label>`).join("");
+  const ps = power.wifi_power_save;
+  $("power-controls").innerHTML = leds +
+    `<label><span>Энергосбережение Wi-Fi<br><small class="hint">меньше расход, чуть выше задержки</small></span>
+      <input type="checkbox" id="wifi-ps" ${ps ? "checked" : ""} ${ps == null ? "disabled" : ""}></label>` +
+    `<h3>Ядра процессора</h3>${cpus}
+     <div><button id="cpus-little">Только A53 (экономия)</button> <button id="cpus-all">Все ядра</button></div>`;
+
+  const ms = power.mem_sleep;
+  const sus = power.suspend || {};
+  $("sleep").innerHTML = (ms ? ms.options.map((o) =>
+    `<label class="row"><span>${esc(SLEEP_NAMES[o] || o)}</span>
+      <input type="radio" name="mem_sleep" value="${esc(o)}" ${o === ms.current ? "checked" : ""}></label>`).join("") : "") +
+    kv([["Успешных засыпаний", sus.success], ["Неудачных", sus.fail],
+        ["Последняя ошибка", sus.fail && sus.fail !== "0" ? `${sus.last_failed_dev || ""} ${sus.last_failed_step || ""} ${sus.last_failed_errno || ""}` : null]]);
+
+  $("rails").innerHTML = `<div class="rails">${power.regulators.map((r) =>
+    `<div class="${r.use ? "" : "off"}"><b>${esc(r.name)}</b> ${r.mv != null ? (r.mv / 1000).toFixed(3) + " В" : ""}
+      ${r.use ? "" : "(выключена)"}<br><small>${esc(r.consumers.join(", "))}</small></div>`).join("") ||
+    "<p class=hint>Нет данных (debugfs недоступен)</p>"}</div>`;
+
+  wirePowerControls();
+}
+
+function wirePowerControls() {
+  document.querySelectorAll("[data-led]").forEach((el) => el.addEventListener("change", () =>
+    savePower({ leds: { [el.dataset.led]: el.value } })));
+  document.querySelectorAll("[data-cpu]").forEach((el) => el.addEventListener("change", () =>
+    savePower({ cpus_online: { [el.dataset.cpu]: el.checked } })));
+  const ps = $("wifi-ps");
+  if (ps) ps.addEventListener("change", () => savePower({ wifi_power_save: ps.checked }));
+  const cpusOf = (big) => Object.fromEntries(Object.keys(power.cpus_online).map((n) =>
+    [n, big ? true : Number(n) < 4]));
+  $("cpus-little").addEventListener("click", () => savePower({ cpus_online: cpusOf(false) }));
+  $("cpus-all").addEventListener("click", () => savePower({ cpus_online: cpusOf(true) }));
+  document.querySelectorAll("input[name=mem_sleep]").forEach((el) =>
+    el.addEventListener("change", () => savePower({ mem_sleep: el.value })));
+}
+
+async function savePower(p) {
+  try {
+    const r = await api("/api/settings", { power: p });
+    if (r.error) toast(r.error); else toast("Применено");
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+  loadPower();
+}
+
+async function loadPower() {
+  try {
+    [power, history] = await Promise.all([api("/api/power"), api("/api/history")]);
+    renderPower();
+    drawChart();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function drawChart() {
+  const c = $("chart");
+  const dpr = window.devicePixelRatio || 1;
+  const wpx = c.clientWidth, hpx = c.clientHeight || 160;
+  c.width = wpx * dpr; c.height = hpx * dpr;
+  const g = c.getContext("2d");
+  g.scale(dpr, dpr);
+  g.clearRect(0, 0, wpx, hpx);
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue("--bar"); g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) { const y = 4 + (hpx - 8) * i / 4; g.beginPath(); g.moveTo(0, y); g.lineTo(wpx, y); g.stroke(); }
+  if (history.length < 2) {
+    $("chart-legend").textContent = "История копится: точка каждые 10 секунд после запуска службы.";
+    return;
+  }
+  const t0 = history[0].t, t1 = history[history.length - 1].t;
+  const maxW = Math.max(10, ...history.map((p) => p.w || 0));
+  const series = [
+    ["bat", 0, 100, css.getPropertyValue("--accent"), "Заряд, %"],
+    ["cpu_c", 20, 100, css.getPropertyValue("--warm"), "CPU, °C (20–100)"],
+    ["load", 0, 100, css.getPropertyValue("--muted"), "Загрузка CPU, %"],
+    ["w", 0, maxW, css.getPropertyValue("--ok"), `Потребление, Вт (0–${maxW.toFixed(0)})`],
+  ];
+  for (const [key, lo, hi, color] of series) {
+    g.strokeStyle = color.trim(); g.lineWidth = 1.5; g.beginPath();
+    let started = false;
+    for (const p of history) {
+      if (p[key] == null) { started = false; continue; }
+      const x = (p.t - t0) / Math.max(1, t1 - t0) * wpx;
+      const y = 4 + (hpx - 8) * (1 - Math.min(1, Math.max(0, (p[key] - lo) / (hi - lo))));
+      if (started) g.lineTo(x, y); else { g.moveTo(x, y); started = true; }
+    }
+    g.stroke();
+  }
+  const mins = Math.round((t1 - t0) / 60);
+  $("chart-legend").innerHTML = series.map(([, , , color, name]) =>
+    `<span style="color:${color.trim()}">■</span> ${esc(name)}`).join(" &nbsp; ") + ` · последние ${mins} мин`;
+}
+
+// --- Hardware ------------------------------------------------------------------
+
+async function loadHardware() {
+  let h;
+  try { h = await api("/api/hardware"); } catch (e) { toast(e.message); return; }
+  const card = (title, body) => `<div class="card"><h2>${esc(title)}</h2>${body}</div>`;
+  const up = h.uptime_s;
+  const sd = h.storage.map((s) => {
+    const slow = s.type === "SD" && s.timing && !/uhs|sdr|ddr/i.test(s.timing);
+    return kv([
+      [s.type === "SD" ? "microSD" : s.type === "MMC" ? "eMMC" : s.type || s.block, `${s.name || ""} ${s.size_gb} ГБ`],
+      ["Режим шины", s.timing ? `${s.timing}, ${s.clock_mhz} МГц, ${s.bus_bits} бит` : null],
+      ["Дата выпуска", s.date],
+    ]) + (slow ? `<p class="hint warnline">Карта работает в режиме high-speed (до ~23 МБ/с): быстрый режим UHS не согласовался.</p>` : "");
+  }).join("");
+  $("hw").innerHTML = [
+    card("Устройство", kv([["Модель", h.model], ["Платформа", h.compatible.join(", ")],
+      ["Часы реального времени", h.rtc], ["Работает", `${Math.floor(up / 3600)} ч ${Math.floor(up % 3600 / 60)} мин`]])),
+    card("Процессор и память", kv([...h.cpu.map((c) => [c.name, `${c.cpus.length} ядра, ${c.min_mhz}–${c.max_mhz} МГц`]),
+      ["Оперативная память", `${h.memory_mb} МБ`]])),
+    card("Накопители", sd + kv([["NVMe (M.2)", h.nvme.length ? h.nvme.join(", ") : "не установлен"],
+      ["PCIe", h.pci.length ? h.pci.map((p) => `${p.slot} ${p.id}`).join(", ") : "нет устройств"]])),
+    card("Экран, графика, видео", kv([...h.displays.map((d) => [d.connector, d.mode]),
+      ["GPU", `${(h.gpu.compatible || []).join(", ")} (${h.gpu.driver})`],
+      ["Видеоблоки", h.video.join(", ")]])),
+    card("Сеть и звук", kv([["Wi-Fi", h.wifi.driver ? `${h.wifi.driver}, ${h.wifi.mac}` : "нет"],
+      ["Прошивка Wi-Fi", h.firmware.wifi], ["Bluetooth", h.bluetooth.join(", ") || "нет"],
+      ["Звук", h.audio.join("; ")]])),
+    card("USB и ввод", kv([...h.usb.map((u) => [u.id, `${u.name} (${u.speed_mbps} Мбит/с)`]),
+      ...h.input.map((n) => ["Ввод", n])])),
+    card("Датчики температуры", kv(h.thermal.map((t) => [t.name,
+      `${t.c} °C; пороги: ${t.trips.map((x) => `${x.type} ${x.c}°`).join(", ")}`]))),
+    card("Система", kv([["ChromiumOS", `${h.os.version} (R${h.os.milestone}, ${h.os.board})`],
+      ["Ядро", h.kernel]])),
+  ].join("");
+}
+
 // --- Wiring --------------------------------------------------------------------
 
 document.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === b));
   document.querySelectorAll(".page").forEach((p) => (p.hidden = p.id !== b.dataset.tab));
   if (b.dataset.tab === "settings") loadSettings().catch((e) => toast(e.message));
+  if (b.dataset.tab === "power") loadPower();
+  if (b.dataset.tab === "hardware") loadHardware();
 }));
+
+// Refresh the power page while it is open (controls keep their state).
+setInterval(() => {
+  if (!$("power").hidden && !(document.activeElement || document.body).closest("#power-controls, #sleep")) loadPower();
+}, 10000);
 
 $("profiles").addEventListener("click", (e) => {
   const p = e.target.dataset.profile;

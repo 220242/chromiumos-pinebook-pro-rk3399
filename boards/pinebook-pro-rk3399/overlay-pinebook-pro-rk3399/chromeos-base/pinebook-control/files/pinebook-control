@@ -106,6 +106,9 @@ DEFAULTS = {
     },
     "tune": {"overclock": "off", "cpu_undervolt_mv": 0,
              "gpu_undervolt_mv": 0},
+    # Power controls; None (or a missing key) leaves the system's own choice.
+    "power": {"leds": {}, "wifi_power_save": None, "cpus_online": {},
+              "mem_sleep": None},
 }
 
 
@@ -448,6 +451,9 @@ def load_settings():
     for k in s["tune"]:
         if k in saved.get("tune", {}):
             s["tune"][k] = saved["tune"][k]
+    for k in s["power"]:
+        if k in saved.get("power", {}):
+            s["power"][k] = saved["power"][k]
     return s
 
 
@@ -477,6 +483,22 @@ def validate(body):
     for k in ("cpu_undervolt_mv", "gpu_undervolt_mv"):
         if k in t and int(t[k]) in UNDERVOLT_STEPS:
             s["tune"][k] = int(t[k])
+    p = body.get("power") or {}
+    leds = {l["name"]: l for l in board_leds()}
+    for name, want in (p.get("leds") or {}).items():
+        if name in leds and want in leds[name]["triggers"] + ["on", "off"]:
+            s["power"]["leds"][name] = want
+    if p.get("wifi_power_save") in (True, False, None) and "wifi_power_save" in p:
+        s["power"]["wifi_power_save"] = p["wifi_power_save"]
+    # cpu0 has no online switch and always stays on.
+    online = cpus_online()
+    for cpu, on in (p.get("cpus_online") or {}).items():
+        if str(cpu) in online and isinstance(on, bool):
+            s["power"]["cpus_online"][str(cpu)] = on
+    ms = mem_sleep()
+    if "mem_sleep" in p and (p["mem_sleep"] is None or
+                             (ms and p["mem_sleep"] in ms["options"])):
+        s["power"]["mem_sleep"] = p["mem_sleep"]
     return s
 
 
@@ -485,19 +507,45 @@ def validate(body):
 class Monitor:
     """Samples CPU load and battery once a second."""
 
+    HISTORY_STEP = 10       # seconds between history points
+    HISTORY_LEN = 1080      # three hours
+
     def __init__(self):
         self.lock = threading.Lock()
         self.prev = None
         self.load = {}
         self.battery_hist = []
+        self.history = []
+        self.ticks = 0
 
     def run(self):
         while True:
             try:
                 self.sample()
+                self.ticks += 1
+                if self.ticks % self.HISTORY_STEP == 0:
+                    self.record()
+                # shill may change Wi-Fi power saving behind our back, and
+                # wlan0 appears after this service starts.
+                if self.ticks % 60 == 5:
+                    apply_power(load_settings())
             except Exception:  # Keep sampling whatever a file read does.
                 log.exception("sample")
             time.sleep(1)
+
+    def record(self):
+        bat = battery()
+        temps = temperatures()
+        watts = None
+        if bat.get("status") == "Discharging":
+            watts = estimate_watts(bat)
+        point = {"t": int(time.time()), "load": self.load.get("all"),
+                 "cpu_c": temps.get("cpu-thermal"), "gpu_c": temps.get("gpu-thermal"),
+                 "bat": bat.get("capacity"), "v": bat.get("voltage_v"),
+                 "w": watts, "ac": bat.get("ac") or bool(bat.get("usb_c"))}
+        with self.lock:
+            self.history.append(point)
+            del self.history[:-self.HISTORY_LEN]
 
     def sample(self):
         cur = {}
@@ -544,6 +592,15 @@ class Monitor:
 
 
 MONITOR = Monitor()
+
+
+def estimate_watts(bat):
+    """Discharge power: from the gauge's time-to-empty, or else from how fast
+    the charge reading falls (the CW2015 does not measure current)."""
+    tte = bat.get("time_to_empty_min")
+    if tte and bat.get("charge_uah") and bat.get("voltage_v"):
+        return round(bat["charge_uah"] / 1e6 * bat["voltage_v"] / (tte / 60), 2)
+    return MONITOR.power_from_history()
 
 
 def battery():
@@ -631,6 +688,317 @@ def memory():
             "gpu_buffers_mb": m.get("Unevictable")}
 
 
+# --- Power and hardware -------------------------------------------------------
+
+LEDS_DIR = "/sys/class/leds"
+CPU_DIR = "/sys/devices/system/cpu"
+MEM_SLEEP = "/sys/power/mem_sleep"
+REGULATORS = "/sys/kernel/debug/regulator/regulator_summary"
+TYPEC_PORT = "/sys/class/typec/port0"
+
+
+def read_num(path):
+    """The leading integer of a sysfs value such as "5000mV" (or None)."""
+    m = re.match(r"\s*(-?\d+)", read(path) or "")
+    return int(m.group(1)) if m else None
+
+
+def selected(value):
+    """The [selected] word of a sysfs choice list such as "s2idle [deep]"."""
+    m = re.search(r"\[([^\]]+)\]", value or "")
+    return m.group(1) if m else None
+
+
+def choices(value):
+    return (value or "").replace("[", "").replace("]", "").split()
+
+
+def board_leds():
+    """The board's LEDs: green:power and red:standby on the Pinebook Pro
+    (not the keyboard's or the MMC hosts' LEDs)."""
+    out = []
+    for name in glob_dir(LEDS_DIR):
+        if name.startswith(("input", "mmc")) or "::" in name:
+            continue
+        d = os.path.join(LEDS_DIR, name)
+        trig = read(d + "/trigger") or ""
+        out.append({"name": name,
+                    "brightness": read_int(d + "/brightness", 0),
+                    "max": read_int(d + "/max_brightness", 1),
+                    "trigger": selected(trig) or "none",
+                    "triggers": choices(trig)})
+    return out
+
+
+def set_led(name, mode):
+    """mode: "on", "off" or one of the LED's triggers. Writes only what
+    differs, so a blinking trigger is not restarted."""
+    d = os.path.join(LEDS_DIR, name)
+    trigger = selected(read(d + "/trigger")) or "none"
+    if mode in ("on", "off"):
+        level = read_int(d + "/max_brightness", 1) if mode == "on" else 0
+        if trigger != "none":
+            write(d + "/trigger", "none")
+        if read_int(d + "/brightness") != level:
+            write(d + "/brightness", level)
+    elif trigger != mode:
+        write(d + "/trigger", mode)
+
+
+def wifi_power_save():
+    try:
+        out = subprocess.run(["iw", "dev", "wlan0", "get", "power_save"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"Power save:\s*(on|off)", out)
+    return m.group(1) == "on" if m else None
+
+
+def set_wifi_power_save(on):
+    try:
+        subprocess.run(["iw", "dev", "wlan0", "set", "power_save",
+                        "on" if on else "off"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("iw power_save: %s", e)
+
+
+def cpus_online():
+    """{"1": True, ...} for the CPUs that can be switched off (not cpu0)."""
+    out = {}
+    for name in glob_dir(CPU_DIR):
+        m = re.fullmatch(r"cpu(\d+)", name)
+        if m and os.path.exists("%s/%s/online" % (CPU_DIR, name)):
+            out[m.group(1)] = read("%s/%s/online" % (CPU_DIR, name)) == "1"
+    return out
+
+
+def mem_sleep():
+    v = read(MEM_SLEEP)
+    return {"current": selected(v), "options": choices(v)} if v else None
+
+
+def apply_power(settings):
+    p = settings.get("power") or {}
+    for name, mode in (p.get("leds") or {}).items():
+        set_led(name, mode)
+    for cpu, on in (p.get("cpus_online") or {}).items():
+        path = "%s/cpu%s/online" % (CPU_DIR, cpu)
+        if os.path.exists(path) and (read(path) == "1") != on:
+            write(path, "1" if on else "0")
+    ms = mem_sleep()
+    if p.get("mem_sleep") and ms and ms["current"] != p["mem_sleep"]:
+        write(MEM_SLEEP, p["mem_sleep"])
+    if p.get("wifi_power_save") is not None and \
+            wifi_power_save() not in (None, p["wifi_power_save"]):
+        set_wifi_power_save(p["wifi_power_save"])
+
+
+def power_supplies():
+    """Every power supply's uevent properties (battery, DC, USB-C)."""
+    out = {}
+    for name in glob_dir("/sys/class/power_supply"):
+        props = {}
+        for line in (read("/sys/class/power_supply/%s/uevent" % name) or "").splitlines():
+            k, _, v = line.partition("=")
+            props[k.replace("POWER_SUPPLY_", "").lower()] = v
+        out[name] = props
+    return out
+
+
+def usb_c():
+    """The USB-C port: roles and what the charger offers (PD source PDOs)."""
+    if not os.path.isdir(TYPEC_PORT):
+        return None
+    out = {"power_role": selected(read(TYPEC_PORT + "/power_role")),
+           "data_role": selected(read(TYPEC_PORT + "/data_role")),
+           "power_operation_mode": read(TYPEC_PORT + "/power_operation_mode"),
+           "partner": os.path.isdir(TYPEC_PORT + "-partner"),
+           "pdos": []}
+    caps = TYPEC_PORT + "-partner/usb_power_delivery/source-capabilities"
+    for pdo in glob_dir(caps):
+        d = os.path.join(caps, pdo)
+        if not os.path.isdir(d):
+            continue
+        out["pdos"].append({
+            "type": pdo.split(":", 1)[-1],
+            "mv": read_num(d + "/voltage") or read_num(d + "/maximum_voltage"),
+            "min_mv": read_num(d + "/minimum_voltage"),
+            "ma": read_num(d + "/maximum_current"),
+        })
+    return out
+
+
+def regulators():
+    """RK808 and the other regulators: voltage, users, consumers (debugfs)."""
+    text = read(REGULATORS)
+    out = []
+    for line in (text or "").splitlines()[2:]:
+        t = line.split()
+        if len(t) >= 9 and t[5].endswith("mV"):
+            if t[0] == "regulator-dummy":
+                out.append(None)
+                continue
+            out.append({"name": t[0], "use": int(t[1]) if t[1].isdigit() else 0,
+                        "mv": int(t[5][:-2]) if t[5][:-2].isdigit() else None,
+                        "consumers": []})
+        elif out and out[-1] is not None and 1 <= len(t) <= 4 and \
+                not t[0].endswith("mA"):
+            out[-1]["consumers"].append(t[0])
+    return [r for r in out if r]
+
+
+def suspend_stats():
+    d = "/sys/power/suspend_stats"
+    keys = ("success", "fail", "last_failed_dev", "last_failed_errno",
+            "last_failed_step")
+    return {k: read(d + "/" + k) for k in keys} if os.path.isdir(d) else {}
+
+
+def power_info():
+    return {
+        "supplies": power_supplies(),
+        "usb_c": usb_c(),
+        "regulators": regulators(),
+        "suspend": suspend_stats(),
+        "leds": board_leds(),
+        "wifi_power_save": wifi_power_save(),
+        "cpus_online": cpus_online(),
+        "mem_sleep": mem_sleep(),
+        "settings": load_settings()["power"],
+    }
+
+
+def read_dt(name):
+    try:
+        with open(os.path.join(DT, name), "rb") as f:
+            return [s.decode(errors="replace") for s in f.read().split(b"\0") if s]
+    except OSError:
+        return []
+
+
+def mmc_info(block):
+    """eMMC or SD card: name, size, and the bus mode it runs at (debugfs)."""
+    dev = os.path.realpath("/sys/block/%s/device" % block)
+    host = os.path.basename(dev).split(":")[0]
+    ios = read("/sys/kernel/debug/%s/ios" % host) or ""
+    clock = re.search(r"^clock:\s*(\d+)", ios, re.M)
+    timing = re.search(r"^timing spec:\s*\d+\s*\(([^)]*)\)", ios, re.M)
+    width = re.search(r"^bus width:\s*\d+\s*\((\d+) bits\)", ios, re.M)
+    return {
+        "block": block,
+        "host": host,
+        "type": read(dev + "/type"),
+        "name": read(dev + "/name"),
+        "date": read(dev + "/date"),
+        "size_gb": round((read_int("/sys/block/%s/size" % block) or 0) * 512 / 1e9, 1),
+        "clock_mhz": round(int(clock.group(1)) / 1e6) if clock else None,
+        "timing": timing.group(1) if timing else None,
+        "bus_bits": int(width.group(1)) if width else None,
+    }
+
+
+def firmware_lines():
+    try:
+        out = subprocess.run(["dmesg"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    found = {}
+    m = re.search(r"brcmfmac: brcmf_c_preinit_dcmds: Firmware: (.*)", out)
+    if m:
+        found["wifi"] = m.group(1).strip()
+    m = re.search(r"Bluetooth: hci0: BCM: (.*firmware.*|.*\.hcd.*)", out)
+    if m:
+        found["bluetooth"] = m.group(1).strip()
+    return found
+
+
+def hardware_info():
+    cpu = []
+    for p in policies():
+        cpu.append({"name": "Cortex-A53" if p["id"] == "little" else "Cortex-A72",
+                    "cpus": p["cpus"],
+                    "max_mhz": (read_int(p["path"] + "/cpuinfo_max_freq") or 0) // 1000,
+                    "min_mhz": (read_int(p["path"] + "/cpuinfo_min_freq") or 0) // 1000})
+    displays = []
+    for c in glob_dir("/sys/class/drm"):
+        d = "/sys/class/drm/" + c
+        if "-" in c and read(d + "/status") == "connected":
+            displays.append({"connector": c.split("-", 1)[1],
+                             "mode": ((read(d + "/modes") or "").splitlines() or [None])[0]})
+    usb = []
+    for dev in glob_dir("/sys/bus/usb/devices"):
+        d = "/sys/bus/usb/devices/" + dev
+        if ":" in dev or not os.path.exists(d + "/idVendor"):
+            continue
+        if read(d + "/bDeviceClass") == "09":  # hubs
+            continue
+        usb.append({"name": " ".join(filter(None, (read(d + "/manufacturer"),
+                                                   read(d + "/product")))) or dev,
+                    "id": "%s:%s" % (read(d + "/idVendor"), read(d + "/idProduct")),
+                    "speed_mbps": read(d + "/speed")})
+    inputs = re.findall(r'^N: Name="([^"]*)"', read("/proc/bus/input/devices") or "", re.M)
+    pci = []
+    for dev in glob_dir("/sys/bus/pci/devices"):
+        d = "/sys/bus/pci/devices/" + dev
+        pci.append({"slot": dev, "id": "%s:%s" % (read(d + "/vendor"), read(d + "/device")),
+                    "class": read(d + "/class")})
+    thermal = []
+    for z in glob_dir("/sys/class/thermal"):
+        if not z.startswith("thermal_zone"):
+            continue
+        d = "/sys/class/thermal/" + z
+        trips = []
+        for n in range(16):
+            t = read_int("%s/trip_point_%d_temp" % (d, n))
+            if t is None:
+                break
+            trips.append({"type": read("%s/trip_point_%d_type" % (d, n)),
+                          "c": round(t / 1000)})
+        thermal.append({"name": read(d + "/type"), "c": round((read_int(d + "/temp") or 0) / 1000, 1),
+                        "trips": trips})
+    lsb = dict(l.split("=", 1) for l in (read("/etc/lsb-release") or "").splitlines()
+               if "=" in l)
+    net = {}
+    if os.path.isdir("/sys/class/net/wlan0"):
+        net = {"driver": os.path.basename(os.path.realpath(
+                   "/sys/class/net/wlan0/device/driver")),
+               "mac": read("/sys/class/net/wlan0/address"),
+               "chip": read("/sys/class/net/wlan0/device/device")}
+    gpu_driver = os.path.basename(os.path.realpath("/sys/class/drm/renderD128/device/driver"))
+    return {
+        "model": (read_dt("model") or ["?"])[0],
+        "compatible": read_dt("compatible"),
+        "cpu": cpu,
+        "memory_mb": memory()["total_mb"],
+        "storage": [mmc_info(b) for b in glob_dir("/sys/block")
+                    if re.fullmatch(r"mmcblk\d+", b)],
+        "nvme": [b for b in glob_dir("/sys/block") if b.startswith("nvme")],
+        "pci": pci,
+        "displays": displays,
+        "gpu": {"driver": gpu_driver,
+                "compatible": read_dt("gpu@ff9a0000/compatible")},
+        "video": [read("/sys/class/video4linux/%s/name" % v)
+                  for v in glob_dir("/sys/class/video4linux")],
+        "audio": [l.strip() for l in (read("/proc/asound/cards") or "").splitlines()
+                  if re.match(r"\s*\d+ \[", l)],
+        "wifi": net,
+        "bluetooth": glob_dir("/sys/class/bluetooth"),
+        "firmware": firmware_lines(),
+        "usb": usb,
+        "input": inputs,
+        "thermal": thermal,
+        "rtc": read("/sys/class/rtc/rtc0/name"),
+        "kernel": os.uname().release,
+        "os": {"version": lsb.get("CHROMEOS_RELEASE_VERSION"),
+               "milestone": lsb.get("CHROMEOS_RELEASE_CHROME_MILESTONE"),
+               "board": lsb.get("CHROMEOS_RELEASE_BOARD"),
+               "track": lsb.get("CHROMEOS_RELEASE_TRACK")},
+        "uptime_s": int(float((read("/proc/uptime") or "0").split()[0])),
+    }
+
+
 def status():
     load = MONITOR.load
     cpu = []
@@ -652,14 +1020,7 @@ def status():
                "max_hz": read_int(GPU_DEVFREQ + "/max_freq"),
                "governor": read(GPU_DEVFREQ + "/governor")}
     bat = battery()
-    watts = None
-    if bat.get("status") == "Discharging":
-        tte = bat.get("time_to_empty_min")
-        if tte and bat.get("charge_uah") and bat.get("voltage_v"):
-            watts = round(bat["charge_uah"] / 1e6 * bat["voltage_v"] / (tte / 60), 2)
-        else:
-            watts = MONITOR.power_from_history()
-    bat["est_watts"] = watts
+    bat["est_watts"] = estimate_watts(bat) if bat.get("status") == "Discharging" else None
     return {
         "time": time.time(),
         "cpu": cpu,
@@ -737,6 +1098,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(status())
         if path == "/api/settings":
             return self.send_json(settings_info())
+        if path == "/api/power":
+            return self.send_json(power_info())
+        if path == "/api/hardware":
+            return self.send_json(hardware_info())
+        if path == "/api/history":
+            with MONITOR.lock:
+                return self.send_json(list(MONITOR.history))
         if path == "/":
             path = "/index.html"
         name = os.path.basename(path)
@@ -764,6 +1132,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json({"error": "bad request: %s" % e}, 400)
         save_settings(new)
         applied = apply_limits(new)
+        if "power" in body:
+            apply_power(new)
+            # A CPU that comes back online starts with the default limits.
+            applied = apply_limits(new)
         result = {"applied": applied, "reboot_needed": False}
         if "google_keys" in body:
             try:
@@ -802,6 +1174,7 @@ def main():
         level=logging.INFO, stream=sys.stderr,
         format="pinebook-control: %(levelname)s %(message)s")
     try:
+        apply_power(load_settings())
         apply_limits(load_settings())
     except Exception:  # The service is still useful without the limits.
         log.exception("Applying the saved settings")
