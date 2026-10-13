@@ -206,6 +206,40 @@ function renderSettings() {
 async function loadSettings() {
   info = await api("/api/settings");
   renderSettings();
+  loadMigrate();
+}
+
+// --- Moving the system -------------------------------------------------------
+
+async function loadMigrate() {
+  let m;
+  try { m = await api("/api/migrate"); } catch (e) { return; }
+  const ts = Array.isArray(m.targets) ? m.targets : [];
+  $("migrate-targets").innerHTML = ts.length ? ts.map((t, i) => `
+    <label class="row"><span>${t.kind === "nvme" ? "NVMe SSD" : "eMMC"} ${esc(t.model || "")},
+      ${t.size_gb} ГБ <small>${t.partitions ? `(сейчас ${t.partitions} разд., будут стёрты)` : ""}</small></span>
+      <input type="radio" name="migrate-target" value="${esc(t.device)}" ${i === 0 ? "checked" : ""}></label>`).join("")
+    : "<p class=hint>Нет дисков для переноса: eMMC не найдена, NVMe не установлен.</p>";
+  $("migrate-go").disabled = !ts.length;
+  $("migrate-state").textContent =
+    m.error ? "Ошибка: " + m.error :
+    m.scheduled ? `Перенос на ${m.scheduled} начнётся при следующей загрузке.` :
+    (m.markers || []).length ? `Система уже перенесена (${m.markers.join(", ")} на этой карте).` :
+    `Система загружена с ${m.booted_from || "?"}.` + (m.power_ok ? "" : " Подключи зарядку перед переносом.");
+  $("migrate-log").textContent = m.log || "Ещё не запускался.";
+}
+
+async function postMigrate(body, done) {
+  try {
+    const r = await fetch("/api/migrate", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Pinebook": "1" },
+      body: JSON.stringify(body),
+    }).then((x) => x.json());
+    toast(r.error ? "Ошибка: " + r.error : done);
+  } catch (e) {
+    toast("Ошибка: " + e.message);
+  }
+  loadMigrate();
 }
 
 async function save(body, done) {
@@ -454,6 +488,19 @@ $("profiles").addEventListener("click", (e) => {
 
 ["little_max", "big_max", "gpu_max", "cpu_governor", "gpu_governor"].forEach((id) =>
   $(id).addEventListener("change", () => save(customBody(), () => "Применено")));
+
+$("migrate-go").addEventListener("click", () => {
+  const sel = document.querySelector("input[name=migrate-target]:checked");
+  if (!sel) return;
+  if (!$("migrate-confirm").checked) { toast("Поставь галочку подтверждения"); return; }
+  if (!confirm(`Всё на ${sel.value} будет стёрто, и туда будет скопирована эта система. Продолжить?`)) return;
+  postMigrate({ target: sel.value, erase_confirmed: true },
+    "Готово: перенос начнётся при следующей загрузке. Перезагрузи ноутбук.");
+});
+$("migrate-cancel").addEventListener("click", () => postMigrate({ target: null }, "Перенос отменён"));
+$("migrate-reboot").addEventListener("click", () => {
+  if (confirm("Перезагрузить ноутбук сейчас?")) postMigrate({ reboot: true }, "Перезагрузка…");
+});
 
 $("keys-save").addEventListener("click", () => {
   const google_keys = {

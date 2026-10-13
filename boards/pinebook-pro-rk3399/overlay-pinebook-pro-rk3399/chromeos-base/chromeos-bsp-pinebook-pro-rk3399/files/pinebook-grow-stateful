@@ -29,6 +29,7 @@ import argparse
 import ctypes
 import fcntl
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -147,6 +148,25 @@ def fix_pmbr(fd, nsect):
     os.pwrite(fd, bytes(mbr), 0)
 
 
+def fill_partition(dev, part_bytes):
+    """Grows STATE's file system to its partition if it is smaller (for
+    instance after pinebook-migrate shrank it to fit a smaller disk)."""
+    out = subprocess.run(["dumpe2fs", "-h", dev], capture_output=True,
+                         text=True).stdout
+    bs = re.search(r"^Block size:\s*(\d+)", out, re.M)
+    count = re.search(r"^Block count:\s*(\d+)", out, re.M)
+    if not bs or not count:
+        return 0
+    fs_bytes = int(bs.group(1)) * int(count.group(1))
+    if part_bytes - fs_bytes < MIN_GROWTH:
+        return 0
+    r = subprocess.run(["resize2fs", dev], capture_output=True, text=True)
+    log("file system %d MiB < partition %d MiB; resize2fs %s: exit %d %s"
+        % (fs_bytes >> 20, part_bytes >> 20, dev, r.returncode,
+           (r.stdout + r.stderr).strip()))
+    return r.returncode
+
+
 def boot_disk():
     out = subprocess.run(["rootdev", "-s", "-d"], capture_output=True,
                          text=True, check=True).stdout.strip()
@@ -175,14 +195,15 @@ def main():
 
         parts = [(i, *gpt.entry(i)) for i in range(gpt.nentries)]
         parts = [p for p in parts if p[1]]
-        if any(p[4] == "ANDROID-DATA" for p in parts):
-            log("ANDROID-DATA exists; STATE stays as it is")
-            return 0
         state = [p for p in parts if p[4] == "STATE"]
         if len(state) != 1:
             log("no single STATE partition; nothing done")
             return 1
         idx, _, first, last, _ = state[0]
+        state_dev = args.part or part_path(disk, idx + 1)
+        if any(p[4] == "ANDROID-DATA" for p in parts):
+            log("ANDROID-DATA exists; STATE stays as it is")
+            return fill_partition(state_dev, (last - first + 1) * sector)
         if any(p[3] > last for p in parts if p[0] != idx):
             log("STATE is not the last partition; nothing done")
             return 1
@@ -203,8 +224,8 @@ def main():
             % (disk, size >> 20, first, last, (last - first + 1) * sector >> 20,
                max(growth, 0) >> 20))
         if growth < MIN_GROWTH:
-            log("STATE already fills the card; nothing to do")
-            return 0
+            log("STATE already fills the card")
+            return fill_partition(state_dev, (last - first + 1) * sector)
         if args.dry_run:
             log("dry run: STATE would end at sector %d" % new_last)
             return 0

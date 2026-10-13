@@ -10,6 +10,39 @@
 # --no-enable-rootfs-verification: there is no verified boot or A/B
 # switching on this board yet.
 
+# After pinebook-migrate moved the system off this card, its EFI-SYSTEM
+# (partition 12 = 0xc) has pinebook-boot-emmc or pinebook-boot-nvme: boot the
+# copy there instead (U-Boot tries the card first). Delete the file to boot
+# the card again. The other disk's boot.scr is loaded at pxefile_addr_r
+# (scriptaddr still holds this one) and does not chain again.
+if test -z "${pxefile_addr_r}"; then setenv pxefile_addr_r 0x00600000; fi
+if test "${pinebook_chained}" != "1"; then
+	setenv pinebook_chained 1
+	setenv pb_devtype ${devtype}
+	setenv pb_devnum ${devnum}
+	if load ${devtype} ${devnum}:c ${pxefile_addr_r} pinebook-boot-emmc; then
+		if load mmc 0:3 ${pxefile_addr_r} /boot/pinebook-pro/boot.scr; then
+			echo "pinebook: the system was moved to the eMMC; booting it"
+			setenv devtype mmc
+			setenv devnum 0
+			source ${pxefile_addr_r}
+		fi
+	fi
+	if load ${pb_devtype} ${pb_devnum}:c ${pxefile_addr_r} pinebook-boot-nvme; then
+		pci enum
+		nvme scan
+		if load nvme 0:3 ${pxefile_addr_r} /boot/pinebook-pro/boot.scr; then
+			echo "pinebook: the system was moved to the NVMe SSD; booting it"
+			setenv devtype nvme
+			setenv devnum 0
+			source ${pxefile_addr_r}
+		fi
+	fi
+	# The copy did not boot: carry on from this disk.
+	setenv devtype ${pb_devtype}
+	setenv devnum ${pb_devnum}
+fi
+
 setenv cros_part 3
 part uuid ${devtype} ${devnum}:${cros_part} cros_root_uuid
 
@@ -43,4 +76,12 @@ fi
 # ("disconnect-failure"); the same setting is the usual fix on other
 # BCM4345 boards.
 setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30 printk.devkmsg=on brcmfmac.feature_disable=0x82000"
+
+# The Pinebook app asked to move the system to another disk: the upstart job
+# pinebook-migrate does it at this boot, before the stateful partition is
+# mounted. On other boots it exits at once.
+if load ${devtype} ${devnum}:c ${ramdisk_addr_r} pinebook-migrate.json; then
+	setenv bootargs "${bootargs} pinebook.migrate=1"
+fi
+
 booti ${kernel_addr_r} - ${fdt_addr_r}

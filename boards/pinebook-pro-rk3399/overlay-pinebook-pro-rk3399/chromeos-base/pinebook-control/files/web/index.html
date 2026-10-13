@@ -132,6 +132,28 @@
   </div>
 
   <div class="card warn">
+    <h2>Перенос системы на eMMC или NVMe</h2>
+    <p class="hint">Переносит всю настроенную систему как есть: аккаунты, файлы,
+      настройки, Linux и Android. Копирование идёт при следующей загрузке, до
+      входа в систему, и занимает от нескольких минут до получаса (на экране
+      видно ход). Не выключай ноутбук и держи зарядку подключённой.
+      Выбранный диск <b>полностью стирается</b>. С eMMC ноутбук потом
+      загружается сам, карту можно вынуть; если оставить её, загрузится
+      копия. С NVMe загрузчик остаётся на карте или eMMC: SSD сам
+      по себе не загружается. Чтобы снова загрузиться с карты, удали на её
+      EFI-SYSTEM файл <code>pinebook-boot-emmc</code> (или
+      <code>pinebook-boot-nvme</code>).</p>
+    <div id="migrate-targets" class="form"></div>
+    <label class="row"><span id="migrate-confirm-text">Я понимаю, что всё на выбранном диске будет стёрто</span>
+      <input type="checkbox" id="migrate-confirm"></label>
+    <button id="migrate-go" class="primary">Перенести при следующей загрузке</button>
+    <button id="migrate-cancel">Отменить</button>
+    <button id="migrate-reboot">Перезагрузить сейчас</button>
+    <p id="migrate-state" class="hint"></p>
+    <details><summary>Журнал последнего переноса</summary><pre id="migrate-log" class="hint"></pre></details>
+  </div>
+
+  <div class="card warn">
     <h2>Разгон и андервольтинг</h2>
     <p class="hint">Меняет таблицы частот и напряжений в загрузчике, работает
       после перезагрузки. Если ноутбук после этого не загружается или
