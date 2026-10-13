@@ -1,3 +1,12 @@
 # Waydroid's network script runs dnsmasq as the DHCP server of the Android
 # container's bridge.
 net-dns/dnsmasq dhcp
+
+# Chrome built from source (no prebuilt has these):
+#  - chrome_media: proprietary codecs and containers (H.264, AAC, MP3, MP4,
+#    HEVC parser...) with ffmpeg_branding=ChromeOS. The prebuilt Chromium has
+#    none, so YouTube live streams (H.264 + AAC) could not play at all.
+#  - hevc_codec: HEVC (H.265) through the hardware decoder (rkvdec).
+#  - subpixel_rendering: LCD subpixel font rendering on the eDP panel.
+#  - no test binaries and no debug info: a much shorter build on the owner's PC.
+chromeos-base/chromeos-chrome chrome_media hevc_codec subpixel_rendering -build_tests -chrome_debug -debug_fission
