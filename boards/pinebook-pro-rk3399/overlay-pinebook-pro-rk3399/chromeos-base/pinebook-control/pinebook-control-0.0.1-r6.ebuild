@@ -20,9 +20,11 @@ SLOT="0"
 KEYWORDS="*"
 REQUIRED_USE="${PYTHON_REQUIRED_USE}"
 
-# rootdev finds the boot card's EFI-SYSTEM partition.
+# rootdev finds the boot card's EFI-SYSTEM partition; e2fsprogs: e2image,
+# resize2fs and dumpe2fs for pinebook-migrate.
 RDEPEND="${PYTHON_DEPS}
 	sys-apps/rootdev
+	sys-fs/e2fsprogs
 "
 
 src_install() {
@@ -34,7 +36,11 @@ src_install() {
 
 	# Google API keys for Chrome, from EFI-SYSTEM or the app, before every ui start.
 	dosbin "${FILESDIR}/pinebook-chrome-keys"
+
+	# Moving the system to the eMMC or an NVMe SSD (at boot, when asked).
+	python_doscript "${FILESDIR}/pinebook-migrate"
 	doins "${FILESDIR}/pinebook-chrome-keys.conf"
+	doins "${FILESDIR}/pinebook-migrate.conf"
 
 	insinto /usr/share/pinebook-control
 	doins -r "${FILESDIR}/web"

@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+
+"""Moves the installed system from the microSD card to the eMMC or an NVMe SSD.
+
+Everything moves as it is: the user accounts and their (encrypted) files,
+settings, Linux and Android. The copy is made at boot, before the stateful
+partition is mounted, so the file systems are copied consistently, block by
+block.
+
+  pinebook-migrate targets             JSON: disks the system can move to
+  pinebook-migrate schedule --target D  write the request to EFI-SYSTEM; the
+                                       copy runs at the next boot
+  pinebook-migrate cancel              remove the request
+  pinebook-migrate status              JSON: request and the last run's log
+  pinebook-migrate run                 the copy (upstart job pinebook-migrate)
+
+The request is pinebook-migrate.json on the boot disk's EFI-SYSTEM. boot.scr
+sees it and adds pinebook.migrate=1 to the kernel command line, so on normal
+boots the job exits at once. The run:
+
+1. removes the request (a failed run is not repeated at every boot);
+2. writes a new GPT on the target: the same partitions at the same places
+   with new unique GUIDs, STATE up to RESERVE before the end of the disk and
+   ANDROID-DATA (if the card has one) after it, the backup GPT at the end;
+3. copies partitions 2-12 raw (kernels, root file systems, OEM, U-Boot in
+   RWFW, EFI-SYSTEM), and STATE and ANDROID-DATA with e2image (only the used
+   blocks), shrinking the card's STATE first if the target's is smaller and
+   growing the copies to fill their partitions;
+4. leaves pinebook-boot-emmc (or pinebook-boot-nvme) on the card's
+   EFI-SYSTEM: the card's boot.scr then boots the copy instead, so the card
+   may stay in. Deleting that file boots the card again.
+5. reboots.
+
+The eMMC is erased (with U-Boot on it, the RK3399 boot ROM starts from it
+first). An NVMe SSD cannot be booted by the boot ROM: U-Boot keeps coming
+from the card (or the eMMC) and boot.scr loads the system from the SSD.
+"""
+
+import argparse
+import json
+import os
+import re
+import struct
+import subprocess
+import sys
+import time
+import uuid
+import zlib
+
+RESERVE = 25 << 30          # left at the end for ANDROID-DATA, as pinebook-grow-stateful
+ALIGN = 1 << 20
+MARGIN = 1 << 30            # free space the copy of STATE keeps at least
+REQUEST = "pinebook-migrate.json"
+MARKERS = {"mmc": "pinebook-boot-emmc", "nvme": "pinebook-boot-nvme"}
+LOG_NAME = "logs/migrate.log"
+ESP_PART = 12
+RUN = "/run/pinebook-migrate"
+
+_log_lines = []
+
+
+def log(msg):
+    line = "%s %s" % (time.strftime("%H:%M:%S"), msg)
+    _log_lines.append(line)
+    print(line, flush=True)
+    try:  # The screen: this runs before the boot splash.
+        with open("/dev/tty1", "w") as tty:
+            tty.write("pinebook-migrate: %s\r\n" % msg)
+    except OSError:
+        pass
+
+
+def sh(*cmd, check=True):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if out:
+        for l in out.splitlines()[-6:]:
+            log("  " + l)
+    if check and r.returncode:
+        raise RuntimeError("%s failed (%d)" % (" ".join(cmd), r.returncode))
+    return r
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def boot_disk():
+    return subprocess.run(["rootdev", "-s", "-d"], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
+
+def part(disk, n):
+    return "%s%s%d" % (disk, "p" if disk[-1].isdigit() else "", n)
+
+
+def disk_bytes(disk):
+    return int(read("/sys/block/%s/size" % os.path.basename(disk)) or 0) * 512
+
+
+def crc(b):
+    return zlib.crc32(b) & 0xffffffff
+
+
+# --- GPT -------------------------------------------------------------------
+
+HDR = struct.Struct("<8sIIIIQQQQ16sQIII")
+
+
+def read_gpt(disk):
+    """[(index, type_guid, uniq_guid, first, last, attrs, name_bytes)], header."""
+    with open(disk, "rb") as f:
+        f.seek(512)
+        raw = f.read(512)
+        h = HDR.unpack_from(raw)
+        if h[0] != b"EFI PART":
+            raise RuntimeError("%s has no GPT" % disk)
+        nentries, esize, entries_lba = h[11], h[12], h[10]
+        f.seek(entries_lba * 512)
+        ent = f.read(nentries * esize)
+    parts = []
+    for i in range(nentries):
+        e = ent[i * esize:(i + 1) * esize]
+        if e[:16] == b"\0" * 16:
+            continue
+        first, last, attrs = struct.unpack_from("<QQQ", e, 32)
+        parts.append({"index": i, "type": e[:16], "uniq": e[16:32], "first": first,
+                      "last": last, "attrs": attrs, "name_raw": e[56:128],
+                      "name": e[56:128].decode("utf-16-le").split("\0", 1)[0]})
+    return parts, {"first_usable": h[7], "nentries": nentries, "esize": esize}
+
+
+def write_gpt(disk, parts, header, nsect):
+    entries = bytearray(header["nentries"] * header["esize"])
+    for p in parts:
+        off = p["index"] * header["esize"]
+        entries[off:off + 16] = p["type"]
+        entries[off + 16:off + 32] = p["uniq"]
+        struct.pack_into("<QQQ", entries, off + 32, p["first"], p["last"], p["attrs"])
+        entries[off + 56:off + 128] = p["name_raw"]
+    entry_sectors = len(entries) // 512
+    last_usable = nsect - 2 - entry_sectors
+    guid = uuid.uuid4().bytes_le
+
+    def hdr(my, alt, elba):
+        h = bytearray(HDR.pack(b"EFI PART", 0x10000, 92, 0, 0, my, alt,
+                               header["first_usable"], last_usable, guid, elba,
+                               header["nentries"], header["esize"], crc(bytes(entries))))
+        struct.pack_into("<I", h, 16, crc(bytes(h)))
+        return bytes(h) + b"\0" * (512 - len(h))
+
+    mbr = bytearray(512)
+    mbr[446:462] = struct.pack("<BBBBBBBBII", 0, 0, 2, 0, 0xEE, 0xFF, 0xFF, 0xFF, 1,
+                               min(nsect - 1, 0xFFFFFFFF))
+    mbr[510:512] = b"\x55\xaa"
+    fd = os.open(disk, os.O_RDWR | os.O_SYNC)
+    try:
+        os.pwrite(fd, bytes(mbr), 0)
+        os.pwrite(fd, hdr(1, nsect - 1, 2), 512)
+        os.pwrite(fd, bytes(entries), 2 * 512)
+        os.pwrite(fd, bytes(entries), (nsect - 1 - entry_sectors) * 512)
+        os.pwrite(fd, hdr(nsect - 1, 1, nsect - 1 - entry_sectors), (nsect - 1) * 512)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return last_usable
+
+
+def reread_partitions(disk, count):
+    fd = os.open(disk, os.O_RDONLY)
+    try:
+        import fcntl
+        fcntl.ioctl(fd, 0x125F)  # BLKRRPART
+    finally:
+        os.close(fd)
+    for _ in range(100):
+        if all(os.path.exists(part(disk, n)) for n in count):
+            return
+        time.sleep(0.1)
+    raise RuntimeError("the new partitions of %s did not appear" % disk)
+
+
+# --- File systems ------------------------------------------------------------
+
+def fs_info(dev):
+    """(block size, block count, free blocks) of an ext4 file system."""
+    out = subprocess.run(["dumpe2fs", "-h", dev], capture_output=True, text=True).stdout
+    get = lambda k: int(re.search(r"^%s:\s*(\d+)" % k, out, re.M).group(1))
+    return get("Block size"), get("Block count"), get("Free blocks")
+
+
+def copy_raw(src, dst_disk, offset, size):
+    with open(src, "rb") as s, open(dst_disk, "r+b") as d:
+        d.seek(offset)
+        left = size
+        while left:
+            chunk = s.read(min(left, 8 << 20))
+            if not chunk:
+                break
+            d.write(chunk)
+            left -= len(chunk)
+        d.flush()
+        os.fsync(d.fileno())
+
+
+def copy_ext4(src, dst, dst_bytes, label):
+    bs, count, free = fs_info(src)
+    used = (count - free) * bs
+    log("%s: %d MiB used of %d MiB" % (label, used >> 20, count * bs >> 20))
+    sh("e2fsck", "-fy", src, check=False)
+    if count * bs > dst_bytes:
+        if used + MARGIN > dst_bytes:
+            raise RuntimeError("%s does not fit: %d MiB used, %d MiB on the target"
+                               % (label, used >> 20, dst_bytes >> 20))
+        log("%s: shrinking the card's file system to %d MiB first"
+            % (label, dst_bytes >> 20))
+        sh("resize2fs", src, "%dK" % (dst_bytes // 1024))
+    log("%s: copying the used blocks" % label)
+    sh("e2image", "-ra", "-p", src, dst)
+    sh("e2fsck", "-fy", dst, check=False)
+    sh("resize2fs", dst)
+
+
+# --- Requests ------------------------------------------------------------------
+
+class Esp:
+    def __init__(self, disk):
+        self.dev = part(disk, ESP_PART)
+
+    def __enter__(self):
+        mounted = [l.split()[1] for l in open("/proc/mounts")
+                   if l.split()[0] == self.dev]
+        if mounted:
+            self.dir, self.own = mounted[0], False
+            return self.dir
+        os.makedirs(RUN, exist_ok=True)
+        self.dir, self.own = os.path.join(RUN, "esp-%s" % os.path.basename(self.dev)), True
+        os.makedirs(self.dir, exist_ok=True)
+        subprocess.run(["mount", "-t", "vfat", "-o", "nosuid,nodev,noexec",
+                        self.dev, self.dir], check=True, capture_output=True)
+        return self.dir
+
+    def __exit__(self, *exc):
+        if self.own:
+            subprocess.run(["umount", self.dir], capture_output=True)
+            os.rmdir(self.dir)
+
+
+def targets():
+    boot = os.path.basename(boot_disk())
+    out = []
+    for name in sorted(os.listdir("/sys/block")):
+        if name == boot:
+            continue
+        kind = None
+        if re.fullmatch(r"mmcblk\d+", name) and read("/sys/block/%s/device/type" % name) == "MMC":
+            kind = "mmc"
+        elif re.fullmatch(r"nvme\d+n1", name):
+            kind = "nvme"
+        if not kind:
+            continue
+        dev = "/dev/" + name
+        parts = [p for p in os.listdir("/sys/block/" + name) if p.startswith(name)]
+        out.append({"device": dev, "kind": kind,
+                    "model": read("/sys/block/%s/device/name" % name)
+                    or read("/sys/block/%s/device/model" % name),
+                    "size_gb": round(disk_bytes(dev) / 1e9, 1),
+                    "partitions": len(parts)})
+    return out
+
+
+def plan(src_disk, dst_disk):
+    """The target's partitions and whether the system fits."""
+    parts, header = read_gpt(src_disk)
+    nsect = disk_bytes(dst_disk) // 512
+    entry_sectors = header["nentries"] * header["esize"] // 512
+    last_usable = nsect - 2 - entry_sectors
+    state = next(p for p in parts if p["name"] == "STATE")
+    android = next((p for p in parts if p["name"] == "ANDROID-DATA"), None)
+    if any(p["last"] > state["last"] for p in parts if p not in (state, android)):
+        raise RuntimeError("STATE is not the last system partition")
+    android_bytes = RESERVE
+    if android:
+        android_bytes = max(RESERVE, (android["last"] - android["first"] + 1) * 512)
+    state_end = ((last_usable + 1) * 512 - android_bytes) // ALIGN * ALIGN
+    new = []
+    for p in parts:
+        q = dict(p, uniq=uuid.uuid4().bytes_le)
+        if p is state:
+            q["last"] = state_end // 512 - 1
+        elif p is android:
+            q["first"] = state_end // 512
+            q["last"] = last_usable
+        new.append(q)
+    state_bytes = state_end - state["first"] * 512
+    return parts, header, new, nsect, state_bytes
+
+
+def schedule(target):
+    disk = boot_disk()
+    if target not in [t["device"] for t in targets()]:
+        raise RuntimeError("%s is not a disk the system can move to" % target)
+    plan(disk, target)  # fails early if the layout does not fit
+    with Esp(disk) as esp:
+        with open(os.path.join(esp, REQUEST), "w") as f:
+            json.dump({"target": target, "from": disk, "time": int(time.time())}, f)
+        subprocess.run(["sync"])
+    return {"scheduled": target}
+
+
+def cancel():
+    with Esp(boot_disk()) as esp:
+        try:
+            os.remove(os.path.join(esp, REQUEST))
+        except FileNotFoundError:
+            pass
+    return {"scheduled": None}
+
+
+def status():
+    out = {"scheduled": None, "log": None, "booted_from": boot_disk()}
+    try:
+        with Esp(boot_disk()) as esp:
+            try:
+                with open(os.path.join(esp, REQUEST)) as f:
+                    out["scheduled"] = json.load(f).get("target")
+            except (OSError, ValueError):
+                pass
+            try:
+                with open(os.path.join(esp, LOG_NAME)) as f:
+                    out["log"] = f.read()[-4000:]
+            except OSError:
+                pass
+            out["markers"] = [m for m in MARKERS.values()
+                              if os.path.exists(os.path.join(esp, m))]
+    except (OSError, subprocess.CalledProcessError) as e:
+        out["error"] = str(e)
+    return out
+
+
+def run(source=None, force=False):
+    if not force and "pinebook.migrate=1" not in (read("/proc/cmdline") or ""):
+        return 0
+    src = source or boot_disk()
+    with Esp(src) as esp:
+        req_path = os.path.join(esp, REQUEST)
+        try:
+            with open(req_path) as f:
+                req = json.load(f)
+        except (OSError, ValueError):
+            return 0
+        os.remove(req_path)
+        subprocess.run(["sync"])
+    dst = req.get("target", "")
+    ok = False
+    try:
+        log("moving the system from %s to %s" % (src, dst))
+        allowed = r"/dev/(mmcblk\d+|nvme\d+n1%s)" % ("|loop\\d+" if force else "")
+        if dst == src or not re.fullmatch(allowed, dst) \
+                or not os.path.exists(dst):
+            raise RuntimeError("bad target %r" % dst)
+        if any(l.split()[0].startswith(dst) for l in open("/proc/mounts")):
+            raise RuntimeError("%s is in use" % dst)
+        parts, header, new, nsect, state_bytes = plan(src, dst)
+        log("writing the partition table (STATE %d MiB)" % (state_bytes >> 20))
+        write_gpt(dst, new, header, nsect)
+        reread_partitions(dst, [p["index"] + 1 for p in new])
+        for p, q in zip(parts, new):
+            n = p["index"] + 1
+            size = (p["last"] - p["first"] + 1) * 512
+            if p["name"] in ("STATE", "ANDROID-DATA"):
+                continue
+            log("copying partition %d %s (%d MiB)" % (n, p["name"], size >> 20))
+            copy_raw(part(src, n), dst, q["first"] * 512, size)
+        for p, q in zip(parts, new):
+            if p["name"] in ("STATE", "ANDROID-DATA"):
+                n = p["index"] + 1
+                copy_ext4(part(src, n), part(dst, n),
+                          (q["last"] - q["first"] + 1) * 512, p["name"])
+        kind = "nvme" if "nvme" in dst else "mmc"
+        with Esp(dst) as esp:
+            for m in list(MARKERS.values()) + [REQUEST]:
+                if os.path.exists(os.path.join(esp, m)):
+                    os.remove(os.path.join(esp, m))
+        with Esp(src) as esp:
+            with open(os.path.join(esp, MARKERS[kind]), "w") as f:
+                f.write("pinebook-migrate: the system was moved to %s on %s.\n"
+                        "Delete this file to boot from this card again.\n"
+                        % (dst, time.strftime("%Y-%m-%d %H:%M")))
+        ok = True
+        log("done: restarting from %s" % dst)
+    except Exception as e:  # Report it and boot normally from the card.
+        log("FAILED: %s; booting from the card as before" % e)
+    finally:
+        try:
+            with Esp(src) as esp:
+                os.makedirs(os.path.join(esp, "logs"), exist_ok=True)
+                with open(os.path.join(esp, LOG_NAME), "w") as f:
+                    f.write("\n".join(_log_lines) + "\n")
+                subprocess.run(["sync"])
+        except Exception:
+            pass
+    if ok and not force:
+        subprocess.run(["sync"])
+        subprocess.run(["reboot", "-f"])
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("action", choices=("targets", "schedule", "cancel", "status", "run"))
+    ap.add_argument("--target")
+    # Tests: the source disk instead of the boot disk, and no cmdline check.
+    ap.add_argument("--source")
+    ap.add_argument("--force", action="store_true")
+    a = ap.parse_args()
+    if a.action == "run":
+        return run(a.source, a.force)
+    try:
+        result = {"targets": targets, "cancel": cancel, "status": status,
+                  "schedule": lambda: schedule(a.target)}[a.action]()
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

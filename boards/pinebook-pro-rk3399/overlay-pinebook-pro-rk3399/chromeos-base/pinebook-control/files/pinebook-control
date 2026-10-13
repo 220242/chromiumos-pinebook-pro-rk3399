@@ -999,6 +999,27 @@ def hardware_info():
     }
 
 
+MIGRATE = "/usr/sbin/pinebook-migrate"
+
+
+def migrate_cmd(*args):
+    try:
+        r = subprocess.run([MIGRATE] + list(args), capture_output=True, text=True,
+                           timeout=60)
+        return json.loads(r.stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return {"error": str(e)}
+
+
+def migrate_info():
+    info = migrate_cmd("status")
+    info["targets"] = migrate_cmd("targets")
+    bat = battery()
+    info["power_ok"] = bool(bat.get("ac") or bat.get("usb_c")) or \
+        (bat.get("capacity") or 0) >= 50
+    return info
+
+
 def status():
     load = MONITOR.load
     cpu = []
@@ -1102,6 +1123,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(power_info())
         if path == "/api/hardware":
             return self.send_json(hardware_info())
+        if path == "/api/migrate":
+            return self.send_json(migrate_info())
         if path == "/api/history":
             with MONITOR.lock:
                 return self.send_json(list(MONITOR.history))
@@ -1121,6 +1144,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if not self.headers.get("X-Pinebook") or (origin and origin not in ORIGINS):
             return self.send(403, "Forbidden\n")
+        if self.path == "/api/migrate":
+            return self.post_migrate()
         if self.path != "/api/settings":
             return self.send(404, "Not found\n")
         try:
@@ -1159,6 +1184,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 save_settings(new)
                 result["error"] = "Could not write %s: %s" % (TUNE_NAME, e)
         self.send_json(result)
+
+
+    def post_migrate(self):
+        """{"target": "/dev/mmcblk2", "erase_confirmed": true} schedules the
+        move for the next boot, {"target": null} cancels it, {"reboot": true}
+        restarts now."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+        except ValueError as e:
+            return self.send_json({"error": "bad request: %s" % e}, 400)
+        if body.get("reboot"):
+            self.send_json({"rebooting": True})
+            subprocess.Popen(["reboot"])
+            return None
+        if body.get("target") is None:
+            return self.send_json(migrate_cmd("cancel"))
+        if body.get("erase_confirmed") is not True:
+            return self.send_json({"error": "erase not confirmed"}, 400)
+        if not migrate_info()["power_ok"]:
+            return self.send_json({"error": "Подключи зарядку: копирование "
+                                   "займёт несколько минут"}, 400)
+        log.info("Moving the system to %s at the next boot", body["target"])
+        return self.send_json(migrate_cmd("schedule", "--target", str(body["target"])))
 
 
 class Server(http.server.ThreadingHTTPServer):
