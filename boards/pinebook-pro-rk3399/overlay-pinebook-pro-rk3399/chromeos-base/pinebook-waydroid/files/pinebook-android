@@ -713,6 +713,32 @@ def tail(path, lines=200):
         return []
 
 
+def cpuset_clone_children():
+    """ChromiumOS mounts the cgroup v1 cpuset controller, and LXC 7 no
+    longer fills in cpuset.cpus and cpuset.mems of the cgroups it creates
+    there: with both empty, nothing can join them and the container does
+    not start. Have the kernel copy them from the parent instead, for the
+    cgroups created under this service's own (where LXC creates its)."""
+    try:
+        with open("/proc/self/cgroup") as f:
+            for line in f:
+                _, controllers, path = line.rstrip("\n").split(":", 2)
+                if "cpuset" in controllers.split(","):
+                    break
+            else:
+                return
+    except OSError:
+        return
+    flag = os.path.join("/sys/fs/cgroup/cpuset", path.lstrip("/"), "cgroup.clone_children")
+    if read_file(flag) == "0":
+        try:
+            with open(flag, "w") as f:
+                f.write("1")
+            log.info("Set %s to 1", flag)
+        except OSError as e:
+            log.warning("Setting %s: %s", flag, e)
+
+
 def log_waydroid_tail(lines=80):
     """Copies the end of Waydroid's own log (on ANDROID-DATA, where LXC's
     errors go) into this service's log, which the boot logs on the card's
@@ -953,6 +979,7 @@ class Android:
         return None
 
     def start_container_service(self):
+        cpuset_clone_children()
         if self.container and self.container.poll() is None:
             return
         import dbus  # pylint: disable=import-outside-toplevel
