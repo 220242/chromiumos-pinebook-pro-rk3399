@@ -42,7 +42,7 @@ run power       sh -c 'for p in /sys/class/power_supply/*; do echo "== $p"; cat 
 run alsa        sh -c 'cat /proc/asound/cards; ls -la /dev/snd'
 run memory      sh -c 'cat /proc/meminfo; echo; cat /sys/block/zram0/mm_stat 2>/dev/null; echo; ps -eo pid,rss,vsz,args --sort=-rss | head -25'
 run dri-clients sh -c 'for f in /sys/kernel/debug/dri/*/clients /sys/kernel/debug/dri/*/framebuffer; do echo "== $f"; cat "$f"; done'
-run video       sh -c 'for v in /sys/class/video4linux/*; do echo "$v: $(cat $v/name)"; done; ls -l /proc/[0-9]*/fd 2>/dev/null | grep -E "/dev/(video|media|dri)" | sort | uniq -c'
+run video       sh -c 'ls -l /dev/video-* /dev/media-* /dev/media* 2>&1; for v in /sys/class/video4linux/*; do echo "$v: $(cat $v/name)"; done; ls -l /proc/[0-9]*/fd 2>/dev/null | grep -E "/dev/(video|media|dri)" | sort | uniq -c'
 run audio       sh -c 'amixer -c 0 contents 2>&1 | head -150; cras_test_client --dump_server_info 2>&1 | head -80; ls -laR /usr/share/alsa/ucm'
 run cpufreq     sh -c 'grep . /sys/devices/system/cpu/cpufreq/policy*/scaling_* /sys/class/devfreq/*/cur_freq /sys/class/devfreq/*/governor /sys/class/thermal/thermal_zone*/temp 2>/dev/null'
 run vm          sh -c 'ls -l /dev/kvm /dev/vhost-vsock; initctl status vm_concierge; ls -la /run/imageloader /var/cache/dlc-images 2>/dev/null'

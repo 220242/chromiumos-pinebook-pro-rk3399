@@ -78,13 +78,17 @@ if [[ -z ${keys} && -f ${SAVED} ]]; then
 	keys=$(read_keys "${SAVED}")
 	log "Keys from ${SAVED}"
 fi
-if [[ -z ${keys} ]]; then
-	log "No Google API keys; Chrome runs without them"
-	exit 0
-fi
 
 mkdir -p "${RUN}"
-{ cat "${DEV_CONF}"; echo; echo "# Added by pinebook-chrome-keys"; echo "${keys}"; } > "${OUT}"
+{
+	cat "${DEV_CONF}"
+	echo
+	echo "# Added by pinebook-chrome-keys"
+	[[ -n ${keys} ]] && echo "${keys}"
+	# Bring-up: how Chrome picks its video decoders (V4L2, rkvdec, Hantro)
+	# goes to /var/log/chrome. No account data in these modules.
+	echo "--vmodule=*/media/gpu/*=2,*/media/gpu/v4l2/*=3,*/media/gpu/chromeos/*=2,*/media/mojo/services/*=1,*/media/filters/*=1"
+} > "${OUT}"
 chmod 0644 "${OUT}"
 chcon --reference="${DEV_CONF}" "${OUT}" 2>/dev/null
-mount --bind "${OUT}" "${DEV_CONF}" && log "Chrome gets $(echo "${keys}" | wc -l) Google API key lines"
+mount --bind "${OUT}" "${DEV_CONF}" && log "Chrome gets $(echo -n "${keys}" | grep -c .) Google API key lines and video logging"
