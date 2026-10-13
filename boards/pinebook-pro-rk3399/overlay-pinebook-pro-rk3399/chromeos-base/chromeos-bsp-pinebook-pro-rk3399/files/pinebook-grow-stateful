@@ -37,6 +37,7 @@ import zlib
 
 RESERVE = 25 << 30          # bytes left free at the end for ANDROID-DATA
 MIN_GROWTH = 1 << 30        # don't bother for less
+FRESH_STATE_MAX = 6 << 30   # STATE of a freshly written image (5 GiB)
 ALIGN = 1 << 20             # partition end on a 1 MiB boundary
 LOG = "/run/pinebook-grow-stateful.log"
 
@@ -203,6 +204,11 @@ def main():
         state_dev = args.part or part_path(disk, idx + 1)
         if any(p[4] == "ANDROID-DATA" for p in parts):
             log("ANDROID-DATA exists; STATE stays as it is")
+            return fill_partition(state_dev, (last - first + 1) * sector)
+        if (last - first + 1) * sector > FRESH_STATE_MAX:
+            # Already grown, or laid out by pinebook-migrate with the sizes
+            # the owner chose: only the file system may need to catch up.
+            log("STATE was sized already; keeping its partition")
             return fill_partition(state_dev, (last - first + 1) * sector)
         if any(p[3] > last for p in parts if p[0] != idx):
             log("STATE is not the last partition; nothing done")

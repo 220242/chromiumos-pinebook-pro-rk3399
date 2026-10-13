@@ -144,6 +144,34 @@
       EFI-SYSTEM файл <code>pinebook-boot-emmc</code> (или
       <code>pinebook-boot-nvme</code>).</p>
     <div id="migrate-targets" class="form"></div>
+    <details id="migrate-advanced">
+      <summary>Расширенный режим: что переносить и как разметить диск</summary>
+      <div class="form">
+        <label>Что переносить
+          <select id="mig-mode">
+            <option value="full">Всё: аккаунты, файлы, настройки, Linux, Android</option>
+            <option value="clean">Чистую систему: без аккаунтов и данных, как после сброса</option>
+          </select></label>
+        <label>Место под Android в конце диска, ГБ
+          <input type="number" id="mig-android" min="0" step="1" value="25" style="min-width:90px"></label>
+        <div class="segmented" id="mig-presets">
+          <button data-android="0">Без Android</button>
+          <button data-android="8">Android 8 ГБ</button>
+          <button data-android="16">16 ГБ</button>
+          <button data-android="25">25 ГБ</button>
+          <button data-android="half">Пополам</button>
+        </div>
+        <label><span>Перенести данные Android (приложения и их файлы)</span>
+          <input type="checkbox" id="mig-copy-android" checked></label>
+        <label><span>Загружаться с нового диска<br><small class="hint">иначе карта
+          останется основной, а копия будет запасной</small></span>
+          <input type="checkbox" id="mig-switch" checked></label>
+        <label><span>Перезагрузиться сразу после копирования</span>
+          <input type="checkbox" id="mig-reboot" checked></label>
+      </div>
+      <button id="mig-preview">Показать разметку</button>
+      <div id="mig-layout"></div>
+    </details>
     <label class="row"><span id="migrate-confirm-text">Я понимаю, что всё на выбранном диске будет стёрто</span>
       <input type="checkbox" id="migrate-confirm"></label>
     <button id="migrate-go" class="primary">Перенести при следующей загрузке</button>
