@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+
+"""Grows the stateful partition (STATE) into the rest of the card.
+
+The image is made for an 8 GB card: STATE is 5 GB and the rest of a larger
+card is left unpartitioned, so ChromeOS soon runs out of space. STATE is the
+last partition on the disk, so it can grow to the right while it is mounted:
+
+1. The GPT is rewritten with STATE ending RESERVE before the end of the
+   card (left free for Android's ANDROID-DATA partition, which
+   pinebook-android creates in the free space at the end) and the backup GPT
+   at the end of the card. Backup first, then primary, so a torn write leaves
+   one valid copy.
+2. The kernel is told the new partition size (BLKPG), without a reboot.
+3. resize2fs grows the mounted ext4 file system (online).
+
+Nothing is done if STATE already reaches (nearly) that far, if STATE is not
+the last partition, or if ANDROID-DATA already exists: in the GPT, or (after the card was
+reflashed) as an ext4 labelled ANDROID-DATA right after the image. The
+boundary depends only on the card size, so after a reflash STATE ends at the
+same place and ANDROID-DATA follows it again. The upstart job
+pinebook-grow-stateful runs this at every boot; after the first time it finds
+nothing to do. Usage: pinebook-grow-stateful [--disk DEV --part DEV] [--dry-run]
+"""
+
+import argparse
+import ctypes
+import fcntl
+import os
+import re
+import struct
+import subprocess
+import sys
+import zlib
+
+RESERVE = 25 << 30          # bytes left free at the end for ANDROID-DATA
+MIN_GROWTH = 1 << 30        # don't bother for less
+FRESH_STATE_MAX = 6 << 30   # STATE of a freshly written image (5 GiB)
+ALIGN = 1 << 20             # partition end on a 1 MiB boundary
+LOG = "/run/pinebook-grow-stateful.log"
+
+BLKPG = 0x1269
+BLKPG_RESIZE_PARTITION = 3
+
+
+def log(msg):
+    print(msg, flush=True)
+    try:
+        with open(LOG, "a") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
+    subprocess.run(["logger", "-t", "pinebook-grow-stateful", msg],
+                   check=False, capture_output=True)
+
+
+def crc(data):
+    return zlib.crc32(data) & 0xffffffff
+
+
+class Gpt:
+    HDR = struct.Struct("<8sIIIIQQQQ16sQIII")
+
+    def __init__(self, fd, sector):
+        self.fd = fd
+        self.sector = sector
+        raw = os.pread(fd, sector, sector)
+        f = self.HDR.unpack_from(raw)
+        (sig, self.rev, self.hsize, hcrc, _, self.my_lba, self.alt_lba,
+         self.first_usable, self.last_usable, self.guid, self.entries_lba,
+         self.nentries, self.esize, ecrc) = f
+        if sig != b"EFI PART":
+            raise ValueError("no primary GPT")
+        hdr = bytearray(raw[:self.hsize])
+        hdr[16:20] = b"\0\0\0\0"
+        if crc(bytes(hdr)) != hcrc:
+            raise ValueError("primary GPT header CRC mismatch")
+        self.raw_header = raw[:self.hsize]
+        self.entries = bytearray(os.pread(fd, self.nentries * self.esize,
+                                          self.entries_lba * sector))
+        if crc(bytes(self.entries)) != ecrc:
+            raise ValueError("GPT entries CRC mismatch")
+
+    def entry(self, i):
+        off = i * self.esize
+        e = self.entries[off:off + self.esize]
+        first, last = struct.unpack_from("<QQ", e, 32)
+        name = e[56:128].decode("utf-16-le").split("\0", 1)[0]
+        used = e[:16] != b"\0" * 16
+        return used, first, last, name
+
+    def set_last(self, i, last):
+        struct.pack_into("<Q", self.entries, i * self.esize + 40, last)
+
+    def header(self, my_lba, alt_lba, entries_lba):
+        ecrc = crc(bytes(self.entries))
+        hdr = bytearray(self.raw_header)
+        struct.pack_into("<QQQQ", hdr, 24, my_lba, alt_lba,
+                         self.first_usable, self.last_usable)
+        struct.pack_into("<Q", hdr, 72, entries_lba)
+        struct.pack_into("<I", hdr, 88, ecrc)
+        hdr[16:20] = b"\0\0\0\0"
+        struct.pack_into("<I", hdr, 16, crc(bytes(hdr)))
+        return bytes(hdr) + b"\0" * (self.sector - len(hdr))
+
+
+class BlkpgPartition(ctypes.Structure):
+    _fields_ = [("start", ctypes.c_longlong), ("length", ctypes.c_longlong),
+                ("pno", ctypes.c_int), ("devname", ctypes.c_char * 64),
+                ("volname", ctypes.c_char * 64)]
+
+
+class BlkpgIoctlArg(ctypes.Structure):
+    _fields_ = [("op", ctypes.c_int), ("flags", ctypes.c_int),
+                ("datalen", ctypes.c_int), ("data", ctypes.c_void_p)]
+
+
+def kernel_resize(fd, pno, start, length):
+    part = BlkpgPartition(start=start, length=length, pno=pno)
+    arg = BlkpgIoctlArg(op=BLKPG_RESIZE_PARTITION, flags=0,
+                        datalen=ctypes.sizeof(part),
+                        data=ctypes.cast(ctypes.pointer(part), ctypes.c_void_p))
+    fcntl.ioctl(fd, BLKPG, arg)
+
+
+def android_data_after_image(fd, sector, nsect, gpt, parts):
+    """Whether an ext4 labelled ANDROID-DATA starts in the free space after
+    the image, where pinebook-android puts it: after the last partition and
+    the image's backup GPT, rounded up to 1 MiB. After a reflash the GPT no
+    longer lists it, but its data is still there."""
+    end = max(p[3] for p in parts) + 1
+    if gpt.alt_lba < nsect - 1:
+        end = max(end, gpt.alt_lba + 1)
+    start = -(-end * sector // ALIGN) * ALIGN
+    sb = os.pread(fd, 1024, start + 1024)
+    if len(sb) < 136 or struct.unpack_from("<H", sb, 56)[0] != 0xEF53:
+        return False
+    return sb[120:136].split(b"\0", 1)[0] == b"ANDROID-DATA"
+
+
+def fix_pmbr(fd, nsect):
+    """The protective MBR's size field: the whole card (or the maximum)."""
+    mbr = bytearray(os.pread(fd, 512, 0))
+    if mbr[510:512] != b"\x55\xaa" or mbr[446 + 4] != 0xEE:
+        return
+    struct.pack_into("<I", mbr, 446 + 12, min(nsect - 1, 0xFFFFFFFF))
+    os.pwrite(fd, bytes(mbr), 0)
+
+
+def fill_partition(dev, part_bytes):
+    """Grows STATE's file system to its partition if it is smaller (for
+    instance after pinebook-migrate shrank it to fit a smaller disk)."""
+    out = subprocess.run(["dumpe2fs", "-h", dev], capture_output=True,
+                         text=True).stdout
+    bs = re.search(r"^Block size:\s*(\d+)", out, re.M)
+    count = re.search(r"^Block count:\s*(\d+)", out, re.M)
+    if not bs or not count:
+        return 0
+    fs_bytes = int(bs.group(1)) * int(count.group(1))
+    if part_bytes - fs_bytes < MIN_GROWTH:
+        return 0
+    r = subprocess.run(["resize2fs", dev], capture_output=True, text=True)
+    log("file system %d MiB < partition %d MiB; resize2fs %s: exit %d %s"
+        % (fs_bytes >> 20, part_bytes >> 20, dev, r.returncode,
+           (r.stdout + r.stderr).strip()))
+    return r.returncode
+
+
+def boot_disk():
+    out = subprocess.run(["rootdev", "-s", "-d"], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    return out
+
+
+def part_path(disk, n):
+    return "%s%s%d" % (disk, "p" if disk[-1].isdigit() else "", n)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--disk")
+    ap.add_argument("--part", help="the STATE partition device (default: from --disk)")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    disk = args.disk or boot_disk()
+    name = os.path.basename(disk)
+    sector = int(open("/sys/block/%s/queue/logical_block_size" % name).read())
+    fd = os.open(disk, os.O_RDWR | os.O_SYNC)
+    try:
+        size = os.lseek(fd, 0, os.SEEK_END)
+        nsect = size // sector
+        gpt = Gpt(fd, sector)
+
+        parts = [(i, *gpt.entry(i)) for i in range(gpt.nentries)]
+        parts = [p for p in parts if p[1]]
+        state = [p for p in parts if p[4] == "STATE"]
+        if len(state) != 1:
+            log("no single STATE partition; nothing done")
+            return 1
+        idx, _, first, last, _ = state[0]
+        state_dev = args.part or part_path(disk, idx + 1)
+        if any(p[4] == "ANDROID-DATA" for p in parts):
+            log("ANDROID-DATA exists; STATE stays as it is")
+            return fill_partition(state_dev, (last - first + 1) * sector)
+        if (last - first + 1) * sector > FRESH_STATE_MAX:
+            # Already grown, or laid out by pinebook-migrate with the sizes
+            # the owner chose: only the file system may need to catch up.
+            log("STATE was sized already; keeping its partition")
+            return fill_partition(state_dev, (last - first + 1) * sector)
+        if any(p[3] > last for p in parts if p[0] != idx):
+            log("STATE is not the last partition; nothing done")
+            return 1
+        if android_data_after_image(fd, sector, nsect, gpt, parts):
+            log("ANDROID-DATA file system found after the image (card was "
+                "reflashed); STATE stays as it is")
+            return 0
+
+        entry_sectors = (gpt.nentries * gpt.esize + sector - 1) // sector
+        new_last_usable = nsect - 1 - entry_sectors - 1
+        target_end = (new_last_usable + 1) * sector - RESERVE
+        target_end -= target_end % ALIGN
+        new_last = target_end // sector - 1
+        if new_last > new_last_usable:
+            new_last = new_last_usable
+        growth = (new_last - last) * sector
+        log("disk %s: %d MiB; STATE sectors %d-%d (%d MiB); can grow by %d MiB"
+            % (disk, size >> 20, first, last, (last - first + 1) * sector >> 20,
+               max(growth, 0) >> 20))
+        if growth < MIN_GROWTH:
+            log("STATE already fills the card")
+            return fill_partition(state_dev, (last - first + 1) * sector)
+        if args.dry_run:
+            log("dry run: STATE would end at sector %d" % new_last)
+            return 0
+
+        # GPT: backup at the end of the card first, then the primary.
+        gpt.set_last(idx, new_last)
+        gpt.last_usable = new_last_usable
+        backup_entries = nsect - 1 - entry_sectors
+        os.pwrite(fd, bytes(gpt.entries), backup_entries * sector)
+        os.pwrite(fd, gpt.header(nsect - 1, 1, backup_entries), (nsect - 1) * sector)
+        os.fsync(fd)
+        os.pwrite(fd, bytes(gpt.entries), gpt.entries_lba * sector)
+        os.pwrite(fd, gpt.header(1, nsect - 1, gpt.entries_lba), sector)
+        fix_pmbr(fd, nsect)
+        os.fsync(fd)
+        log("GPT written: STATE now ends at sector %d" % new_last)
+
+        kernel_resize(fd, idx + 1, first * sector, (new_last - first + 1) * sector)
+        log("kernel partition %d resized" % (idx + 1))
+    finally:
+        os.close(fd)
+
+    part = args.part or part_path(disk, idx + 1)
+    r = subprocess.run(["resize2fs", part], capture_output=True, text=True)
+    log("resize2fs %s: exit %d %s %s" % (part, r.returncode, r.stdout.strip(),
+                                         r.stderr.strip()))
+    return r.returncode
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as e:  # Never block the boot; say what happened.
+        log("failed: %r" % (e,))
+        sys.exit(1)

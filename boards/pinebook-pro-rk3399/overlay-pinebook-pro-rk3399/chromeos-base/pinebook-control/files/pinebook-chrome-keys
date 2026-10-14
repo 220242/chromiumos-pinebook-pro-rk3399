@@ -1,0 +1,94 @@
+#!/bin/bash
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+#
+# Google API keys for Chrome, so it can sign in to Google accounts: a
+# Chromium build has none of its own ("OAuth2 token fetch failed").
+#
+# Reads, in this order, the first that exists:
+#   google-api-keys.txt in the root of the boot card's EFI-SYSTEM partition
+#     (easy to create from Windows);
+#   /var/lib/pinebook-control/google-api-keys.conf (written by the Pinebook
+#     app).
+# Each holds lines NAME=VALUE for GOOGLE_API_KEY, GOOGLE_DEFAULT_CLIENT_ID and
+# GOOGLE_DEFAULT_CLIENT_SECRET; anything else is ignored. The upstart job
+# pinebook-chrome-keys runs this before every start of the ui job: it puts
+# /etc/chrome_dev.conf plus these lines in /run and bind-mounts that copy over
+# /etc/chrome_dev.conf, where session_manager reads Chrome's environment.
+
+set -u
+DEV_CONF=/etc/chrome_dev.conf
+RUN=/run/pinebook-control
+OUT=${RUN}/chrome_dev.conf
+SAVED=/var/lib/pinebook-control/google-api-keys.conf
+
+log() { logger -t pinebook-chrome-keys "$*"; }
+
+# Back to the original file first (ui restarts run this again).
+while grep -q " ${DEV_CONF} " /proc/mounts; do
+	umount "${DEV_CONF}" || break
+done
+
+keys=""
+read_keys() { # read_keys FILE: the allowed NAME=VALUE lines
+	# Notepad may add a UTF-8 BOM and CRLF; people add spaces and quotes.
+	sed -e '1s/^\xef\xbb\xbf//' -e 's/\r$//' -e 's/^[[:space:]]*//' \
+		-e 's/[[:space:]]*$//' -e 's/[[:space:]]*=[[:space:]]*/=/' \
+		-e 's/="\(.*\)"$/=\1/' "$1" | grep -E '^(GOOGLE_API_KEY|GOOGLE_DEFAULT_CLIENT_ID|GOOGLE_DEFAULT_CLIENT_SECRET)=[A-Za-z0-9._-]+$'
+}
+
+disk=$(rootdev -s -d 2>/dev/null)
+if [[ -n ${disk} ]]; then
+	case ${disk} in
+	*[0-9]) esp=${disk}p12 ;;
+	*) esp=${disk}12 ;;
+	esac
+	# EFI-SYSTEM may already be mounted read-write by pinebook-boot-logs; a
+	# second, read-only mount of it would fail, so use that one.
+	mnt=$(awk -v d="${esp}" '$1 == d { print $2; exit }' /proc/mounts)
+	own=""
+	if [[ -z ${mnt} ]]; then
+		mnt=$(mktemp -d)
+		if mount -t vfat -o nosuid,nodev,noexec "${esp}" "${mnt}"; then
+			own=1
+		else
+			log "Cannot mount ${esp}"
+			rmdir "${mnt}"
+			mnt=""
+		fi
+	fi
+	if [[ -n ${mnt} ]]; then
+		# Windows may hide a second .txt it added.
+		for f in "${mnt}"/google-api-keys.txt "${mnt}"/google-api-keys.txt.txt \
+			"${mnt}"/GOOGLE-API-KEYS.TXT "${mnt}"/google-api-keys; do
+			if [[ -f ${f} ]]; then
+				keys=$(read_keys "${f}")
+				log "Keys from EFI-SYSTEM/${f##*/}: $(echo -n "${keys}" | grep -c .) usable lines"
+				break
+			fi
+		done
+		[[ -n ${keys} ]] || log "No usable google-api-keys.txt on EFI-SYSTEM ($(ls "${mnt}" | tr '\n' ' '))"
+		if [[ -n ${own} ]]; then
+			umount "${mnt}"
+			rmdir "${mnt}"
+		fi
+	fi
+fi
+if [[ -z ${keys} && -f ${SAVED} ]]; then
+	keys=$(read_keys "${SAVED}")
+	log "Keys from ${SAVED}"
+fi
+
+mkdir -p "${RUN}"
+{
+	cat "${DEV_CONF}"
+	echo
+	echo "# Added by pinebook-chrome-keys"
+	[[ -n ${keys} ]] && echo "${keys}"
+	# Bring-up: how Chrome picks its video decoders (V4L2, rkvdec, Hantro)
+	# goes to /var/log/chrome. No account data in these modules.
+	echo "--vmodule=*/media/gpu/*=2,*/media/gpu/v4l2/*=3,*/media/gpu/chromeos/*=2,*/media/mojo/services/*=1,*/media/filters/*=1"
+} > "${OUT}"
+chmod 0644 "${OUT}"
+chcon --reference="${DEV_CONF}" "${OUT}" 2>/dev/null
+mount --bind "${OUT}" "${DEV_CONF}" && log "Chrome gets $(echo -n "${keys}" | grep -c .) Google API key lines and video logging"

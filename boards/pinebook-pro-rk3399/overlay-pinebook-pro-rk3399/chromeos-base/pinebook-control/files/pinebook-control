@@ -1,0 +1,1248 @@
+#!/usr/bin/env python3
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+
+"""Pinebook Pro control service, behind the Pinebook app.
+
+Runs as root from the upstart job pinebook-control and serves the app at
+http://pinebook.localhost:8086/ (localhost only):
+
+GET  /api/status    CPU and GPU frequencies and load, temperatures, battery
+                    and estimated power, memory, and which programs use the
+                    GPU and the hardware video decoders.
+GET  /api/settings  The saved settings and what the hardware allows.
+POST /api/settings  Saves and applies the CPU/GPU limits right away, and
+                    writes or removes the boot-time tuning (overclock,
+                    undervolt).
+
+Limits (governor, maximum frequency) are applied through cpufreq and devfreq
+at every start of the service. Overclocking and undervolting change the OPP
+tables in the device tree, so they take effect at the next boot: the service
+writes pinebook-tune.scr (a U-Boot script of fdt commands) to the card's
+EFI-SYSTEM partition, and the board's boot.scr runs it. Deleting that file
+(from any computer: EFI-SYSTEM is FAT) brings back the stock tables.
+
+POST requests need the X-Pinebook header (which a page from another origin
+cannot send without a CORS preflight, and this server answers none) and a
+matching Origin; every request needs a localhost Host header.
+"""
+
+import http.server
+import json
+import logging
+import os
+import re
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import zlib
+
+PORT = 8086
+HOSTS = ("pinebook.localhost", "localhost", "127.0.0.1", "[::1]")
+ORIGINS = tuple("http://%s:%d" % (h, PORT) for h in HOSTS)
+WEB = "/usr/share/pinebook-control/web"
+STATE_DIR = "/var/lib/pinebook-control"
+SETTINGS_FILE = STATE_DIR + "/settings.json"
+RUN = "/run/pinebook-control"
+TUNE_NAME = "pinebook-tune.scr"
+ESP_PART = 12
+
+CPUFREQ = "/sys/devices/system/cpu/cpufreq"
+GPU_DEVFREQ = "/sys/class/devfreq/ff9a0000.gpu"
+DT = "/sys/firmware/devicetree/base"
+
+log = logging.getLogger("pinebook-control")
+
+# Stock OPP tables of rk3399-pinebook-pro.dtb (kernel 6.6): (Hz, microvolts),
+# and the highest voltage each table allows.
+STOCK = {
+    "little": {
+        "node": "/opp-table-0",
+        "vmax": 1250000,
+        "opps": [(408000000, 825000), (600000000, 825000),
+                 (816000000, 850000), (1008000000, 925000),
+                 (1200000000, 1000000), (1416000000, 1125000)],
+    },
+    "big": {
+        "node": "/opp-table-1",
+        "vmax": 1250000,
+        "opps": [(408000000, 825000), (600000000, 825000),
+                 (816000000, 825000), (1008000000, 875000),
+                 (1200000000, 950000), (1416000000, 1025000),
+                 (1608000000, 1100000), (1800000000, 1200000)],
+    },
+    "gpu": {
+        "node": "/opp-table-2",
+        "vmax": 1150000,
+        "opps": [(200000000, 825000), (297000000, 825000),
+                 (400000000, 825000), (500000000, 875000),
+                 (600000000, 925000), (800000000, 1100000)],
+    },
+}
+
+# Extra OPPs per overclock level: (Hz, microvolts). The rates are in the
+# RK3399 PLL tables; the regulators allow 1.35 V (little) and 1.5 V (big).
+OVERCLOCK = {
+    "off": {},
+    "mild": {"little": [(1512000000, 1200000)],
+             "big": [(1992000000, 1250000)]},
+    "strong": {"little": [(1512000000, 1200000), (1608000000, 1275000)],
+               "big": [(1992000000, 1250000), (2088000000, 1300000)]},
+}
+UNDERVOLT_STEPS = (0, 25, 50, 75, 100)
+VMIN = 800000
+
+PROFILES = ("powersave", "balanced", "performance", "custom")
+
+DEFAULTS = {
+    "profile": "balanced",
+    "custom": {
+        "little_max": None, "big_max": None, "cpu_governor": "schedutil",
+        "gpu_max": None, "gpu_governor": "simple_ondemand",
+    },
+    "tune": {"overclock": "off", "cpu_undervolt_mv": 0,
+             "gpu_undervolt_mv": 0},
+    # Power controls; None (or a missing key) leaves the system's own choice.
+    "power": {"leds": {}, "wifi_power_save": None, "cpus_online": {},
+              "mem_sleep": None},
+}
+
+
+def read(path, default=None):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def read_int(path, default=None):
+    v = read(path)
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def write(path, value):
+    try:
+        with open(path, "w") as f:
+            f.write(str(value))
+        return True
+    except OSError as e:
+        log.warning("write %s=%s: %s", path, value, e)
+        return False
+
+
+# --- Hardware -----------------------------------------------------------
+
+def policies():
+    """cpufreq policies: little (A53, cpu0-3) first, big (A72, cpu4-5)."""
+    out = []
+    for name in sorted(os.listdir(CPUFREQ)) if os.path.isdir(CPUFREQ) else []:
+        p = os.path.join(CPUFREQ, name)
+        cpus = [int(c) for c in (read(p + "/related_cpus") or "").split()]
+        if not cpus:
+            continue
+        out.append({
+            "id": "little" if 0 in cpus else "big",
+            "path": p,
+            "cpus": cpus,
+        })
+    return out
+
+
+def avail_freqs(path):
+    return sorted(int(x) for x in
+                  (read(path + "/scaling_available_frequencies") or "").split())
+
+
+def gpu_freqs():
+    return sorted(int(x) for x in
+                  (read(GPU_DEVFREQ + "/available_frequencies") or "").split())
+
+
+def clamp_to(freqs, want):
+    """The highest available frequency not above want (None: the highest)."""
+    if not freqs:
+        return None
+    if want is None:
+        return freqs[-1]
+    ok = [f for f in freqs if f <= want]
+    return ok[-1] if ok else freqs[0]
+
+
+def profile_limits(settings):
+    """Governors and maximum frequencies for the chosen profile."""
+    prof = settings.get("profile", "balanced")
+    pol = {p["id"]: p for p in policies()}
+    lf = avail_freqs(pol["little"]["path"]) if "little" in pol else []
+    bf = avail_freqs(pol["big"]["path"]) if "big" in pol else []
+    gf = gpu_freqs()
+    if prof == "powersave":
+        return {"cpu_governor": "schedutil",
+                "little_max": clamp_to(lf, 1008000), "big_max": clamp_to(bf, 1200000),
+                "gpu_governor": "simple_ondemand", "gpu_max": clamp_to(gf, 400000000)}
+    if prof == "performance":
+        return {"cpu_governor": "performance",
+                "little_max": clamp_to(lf, None), "big_max": clamp_to(bf, None),
+                "gpu_governor": "performance", "gpu_max": clamp_to(gf, None)}
+    if prof == "custom":
+        c = settings.get("custom", {})
+        return {"cpu_governor": c.get("cpu_governor") or "schedutil",
+                "little_max": clamp_to(lf, c.get("little_max")),
+                "big_max": clamp_to(bf, c.get("big_max")),
+                "gpu_governor": c.get("gpu_governor") or "simple_ondemand",
+                "gpu_max": clamp_to(gf, c.get("gpu_max"))}
+    return {"cpu_governor": "schedutil",
+            "little_max": clamp_to(lf, None), "big_max": clamp_to(bf, None),
+            "gpu_governor": "simple_ondemand", "gpu_max": clamp_to(gf, None)}
+
+
+def apply_limits(settings):
+    lim = profile_limits(settings)
+    for p in policies():
+        govs = (read(p["path"] + "/scaling_available_governors") or "").split()
+        if lim["cpu_governor"] in govs:
+            write(p["path"] + "/scaling_governor", lim["cpu_governor"])
+        mx = lim["%s_max" % p["id"]]
+        if mx:
+            write(p["path"] + "/scaling_max_freq", mx)
+    if os.path.isdir(GPU_DEVFREQ):
+        govs = (read(GPU_DEVFREQ + "/available_governors") or "").split()
+        if lim["gpu_governor"] in govs:
+            write(GPU_DEVFREQ + "/governor", lim["gpu_governor"])
+        if lim["gpu_max"]:
+            write(GPU_DEVFREQ + "/max_freq", lim["gpu_max"])
+    log.info("Applied %s: %s", settings.get("profile"), lim)
+    return lim
+
+
+# --- Boot-time tuning (EFI-SYSTEM) ---------------------------------------
+
+def tune_tables(tune):
+    """The OPP tables a tuning gives: {table: [(Hz, uV, vmax), ...]}."""
+    oc = OVERCLOCK.get(tune.get("overclock"), {})
+    out = {}
+    for name, t in STOCK.items():
+        off = 1000 * int(tune.get("gpu_undervolt_mv" if name == "gpu"
+                                  else "cpu_undervolt_mv") or 0)
+        rows = []
+        for hz, uv in t["opps"] + oc.get(name, []):
+            v = max(uv - off, VMIN)
+            rows.append((hz, v, max(t["vmax"], v)))
+        out[name] = rows
+    return out
+
+
+def tune_script(tune):
+    lines = ["# %s %s" % (TUNE_NAME, json.dumps(tune, sort_keys=True)),
+             'echo "pinebook-tune: overclock %s, CPU -%s mV, GPU -%s mV"' % (
+                 tune.get("overclock"), tune.get("cpu_undervolt_mv"),
+                 tune.get("gpu_undervolt_mv"))]
+    for name, rows in tune_tables(tune).items():
+        node = STOCK[name]["node"]
+        nstock = len(STOCK[name]["opps"])
+        for i, (hz, v, vmax) in enumerate(rows):
+            path = "%s/opp%02d" % (node, i)
+            if i >= nstock:
+                lines.append("fdt mknode %s opp%02d" % (node, i))
+                lines.append("fdt set %s opp-hz <0x%x 0x%x>" % (
+                    path, hz >> 32, hz & 0xffffffff))
+            elif v == STOCK[name]["opps"][i][1]:
+                continue
+            lines.append("fdt set %s opp-microvolt <0x%x 0x%x 0x%x>" % (
+                path, v, v, vmax))
+    return "\n".join(lines) + "\n"
+
+
+def uimage_script(text):
+    """A U-Boot legacy script image, as `mkimage -T script` makes."""
+    data = text.encode()
+    payload = struct.pack(">II", len(data), 0) + data
+    hdr = struct.pack(">IIIIIIIBBBB32s", 0x27051956, 0, int(time.time()),
+                      len(payload), 0, 0, zlib.crc32(payload) & 0xffffffff,
+                      5, 22, 6, 0, b"pinebook-tune")  # linux, arm64, script
+    hcrc = zlib.crc32(hdr) & 0xffffffff
+    return hdr[:4] + struct.pack(">I", hcrc) + hdr[8:] + payload
+
+
+def boot_disk():
+    try:
+        dev = subprocess.run(["rootdev", "-s", "-d"], capture_output=True,
+                             text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return dev or None
+
+
+def esp_device():
+    disk = boot_disk()
+    if not disk:
+        return None
+    sep = "p" if disk[-1].isdigit() else ""
+    dev = "%s%s%d" % (disk, sep, ESP_PART)
+    return dev if os.path.exists(dev) else None
+
+
+class EspMount:
+    """EFI-SYSTEM, mounted for the duration of a with block."""
+
+    def __enter__(self):
+        self.dev = esp_device()
+        if not self.dev:
+            raise RuntimeError("EFI-SYSTEM partition not found")
+        os.makedirs(RUN, exist_ok=True)
+        self.dir = tempfile.mkdtemp(dir=RUN, prefix="esp.")
+        subprocess.run(["mount", "-t", "vfat", "-o",
+                        "nosuid,nodev,noexec,umask=0022", self.dev, self.dir],
+                       check=True, capture_output=True)
+        return self.dir
+
+    def __exit__(self, *exc):
+        subprocess.run(["umount", self.dir], capture_output=True)
+        os.rmdir(self.dir)
+
+
+def tune_is_stock(tune):
+    return (tune.get("overclock", "off") == "off"
+            and not tune.get("cpu_undervolt_mv")
+            and not tune.get("gpu_undervolt_mv"))
+
+
+def write_tune(tune):
+    with EspMount() as esp:
+        path = os.path.join(esp, TUNE_NAME)
+        if tune_is_stock(tune):
+            if os.path.exists(path):
+                os.remove(path)
+            log.info("Removed %s", TUNE_NAME)
+        else:
+            tmp = path + ".new"
+            with open(tmp, "wb") as f:
+                f.write(uimage_script(tune_script(tune)))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            log.info("Wrote %s: %s", TUNE_NAME, tune)
+        subprocess.run(["sync"])
+
+
+def read_tune_file():
+    """The tuning saved on EFI-SYSTEM (None: none, stock tables)."""
+    try:
+        with EspMount() as esp:
+            with open(os.path.join(esp, TUNE_NAME), "rb") as f:
+                data = f.read()
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
+        return None
+    m = re.search(rb"# %s (\{[^\n]*\})" % TUNE_NAME.encode(), data)
+    try:
+        return json.loads(m.group(1)) if m else {"unknown": True}
+    except ValueError:
+        return {"unknown": True}
+
+
+GOOGLE_KEYS_FILE = STATE_DIR + "/google-api-keys.conf"
+GOOGLE_KEYS = {
+    "api_key": ("GOOGLE_API_KEY", r"[A-Za-z0-9_-]{20,80}"),
+    "client_id": ("GOOGLE_DEFAULT_CLIENT_ID",
+                  r"[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com"),
+    "client_secret": ("GOOGLE_DEFAULT_CLIENT_SECRET", r"[A-Za-z0-9_-]{10,80}"),
+}
+
+
+def google_keys_info():
+    """Whether Chrome has Google API keys (values are not sent back)."""
+    out = {"saved": False, "client_id": None,
+           "active": bool(re.search(r"^GOOGLE_API_KEY=", read("/etc/chrome_dev.conf") or "",
+                                    re.M))}
+    text = read(GOOGLE_KEYS_FILE)
+    if text:
+        out["saved"] = True
+        m = re.search(r"^GOOGLE_DEFAULT_CLIENT_ID=(\S+)", text, re.M)
+        out["client_id"] = m.group(1) if m else None
+    return out
+
+
+def set_google_keys(keys):
+    """Saves the keys for pinebook-chrome-keys (None: removes them)."""
+    if keys is None:
+        if os.path.exists(GOOGLE_KEYS_FILE):
+            os.remove(GOOGLE_KEYS_FILE)
+        return
+    lines = []
+    for field, (name, pattern) in GOOGLE_KEYS.items():
+        value = str(keys.get(field) or "").strip()
+        if not re.fullmatch(pattern, value):
+            raise ValueError("%s does not look right" % name)
+        lines.append("%s=%s" % (name, value))
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = GOOGLE_KEYS_FILE + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, GOOGLE_KEYS_FILE)
+    log.info("Saved Google API keys (client %s)", keys.get("client_id"))
+
+
+NOLOGS_NAME = "pinebook-nologs"
+
+
+def boot_logs_enabled():
+    """pinebook-boot-logs writes to EFI-SYSTEM unless pinebook-nologs exists."""
+    try:
+        with EspMount() as esp:
+            return not os.path.exists(os.path.join(esp, NOLOGS_NAME))
+    except (OSError, RuntimeError, subprocess.CalledProcessError):
+        return None
+
+
+def set_boot_logs(enabled):
+    with EspMount() as esp:
+        path = os.path.join(esp, NOLOGS_NAME)
+        if enabled:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            with open(path, "w") as f:
+                f.write("Delete this file to save boot logs to logs/ again.\n")
+        subprocess.run(["sync"])
+    log.info("Boot logs on EFI-SYSTEM: %s", "on" if enabled else "off")
+
+
+def running_tables():
+    """The OPP tables the kernel booted with: {table: [(MHz, mV), ...]}."""
+    out = {}
+    for name, t in STOCK.items():
+        base = DT + t["node"]
+        rows = []
+        for opp in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            try:
+                with open(os.path.join(base, opp, "opp-hz"), "rb") as f:
+                    hz = int.from_bytes(f.read()[:8], "big")
+                with open(os.path.join(base, opp, "opp-microvolt"), "rb") as f:
+                    uv = int.from_bytes(f.read()[:4], "big")
+            except OSError:
+                continue
+            rows.append((hz // 1000000, uv // 1000))
+        out[name] = rows
+    return out
+
+
+# --- Settings -------------------------------------------------------------
+
+def load_settings():
+    s = json.loads(json.dumps(DEFAULTS))
+    try:
+        with open(SETTINGS_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return s
+    if saved.get("profile") in PROFILES:
+        s["profile"] = saved["profile"]
+    for k in s["custom"]:
+        if k in saved.get("custom", {}):
+            s["custom"][k] = saved["custom"][k]
+    for k in s["tune"]:
+        if k in saved.get("tune", {}):
+            s["tune"][k] = saved["tune"][k]
+    for k in s["power"]:
+        if k in saved.get("power", {}):
+            s["power"][k] = saved["power"][k]
+    return s
+
+
+def save_settings(s):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = SETTINGS_FILE + ".new"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=1, sort_keys=True)
+    os.replace(tmp, SETTINGS_FILE)
+
+
+def validate(body):
+    s = load_settings()
+    if body.get("profile") in PROFILES:
+        s["profile"] = body["profile"]
+    c = body.get("custom") or {}
+    for k in ("little_max", "big_max", "gpu_max"):
+        if k in c:
+            v = c[k]
+            s["custom"][k] = int(v) if v not in (None, "") else None
+    for k in ("cpu_governor", "gpu_governor"):
+        if k in c and re.fullmatch(r"[a-z_]{1,32}", str(c[k])):
+            s["custom"][k] = c[k]
+    t = body.get("tune") or {}
+    if t.get("overclock") in OVERCLOCK:
+        s["tune"]["overclock"] = t["overclock"]
+    for k in ("cpu_undervolt_mv", "gpu_undervolt_mv"):
+        if k in t and int(t[k]) in UNDERVOLT_STEPS:
+            s["tune"][k] = int(t[k])
+    p = body.get("power") or {}
+    leds = {l["name"]: l for l in board_leds()}
+    for name, want in (p.get("leds") or {}).items():
+        if name in leds and want in leds[name]["triggers"] + ["on", "off"]:
+            s["power"]["leds"][name] = want
+    if p.get("wifi_power_save") in (True, False, None) and "wifi_power_save" in p:
+        s["power"]["wifi_power_save"] = p["wifi_power_save"]
+    # cpu0 has no online switch and always stays on.
+    online = cpus_online()
+    for cpu, on in (p.get("cpus_online") or {}).items():
+        if str(cpu) in online and isinstance(on, bool):
+            s["power"]["cpus_online"][str(cpu)] = on
+    ms = mem_sleep()
+    if "mem_sleep" in p and (p["mem_sleep"] is None or
+                             (ms and p["mem_sleep"] in ms["options"])):
+        s["power"]["mem_sleep"] = p["mem_sleep"]
+    return s
+
+
+# --- Monitoring -------------------------------------------------------------
+
+class Monitor:
+    """Samples CPU load and battery once a second."""
+
+    HISTORY_STEP = 10       # seconds between history points
+    HISTORY_LEN = 1080      # three hours
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.prev = None
+        self.load = {}
+        self.battery_hist = []
+        self.history = []
+        self.ticks = 0
+
+    def run(self):
+        while True:
+            try:
+                self.sample()
+                self.ticks += 1
+                if self.ticks % self.HISTORY_STEP == 0:
+                    self.record()
+                # shill may change Wi-Fi power saving behind our back, and
+                # wlan0 appears after this service starts.
+                if self.ticks % 60 == 5:
+                    apply_power(load_settings())
+            except Exception:  # Keep sampling whatever a file read does.
+                log.exception("sample")
+            time.sleep(1)
+
+    def record(self):
+        bat = battery()
+        temps = temperatures()
+        watts = None
+        if bat.get("status") == "Discharging":
+            watts = estimate_watts(bat)
+        point = {"t": int(time.time()), "load": self.load.get("all"),
+                 "cpu_c": temps.get("cpu-thermal"), "gpu_c": temps.get("gpu-thermal"),
+                 "bat": bat.get("capacity"), "v": bat.get("voltage_v"),
+                 "w": watts, "ac": bat.get("ac") or bool(bat.get("usb_c"))}
+        with self.lock:
+            self.history.append(point)
+            del self.history[:-self.HISTORY_LEN]
+
+    def sample(self):
+        cur = {}
+        with open("/proc/stat") as f:
+            for line in f:
+                m = re.match(r"cpu(\d*) (.*)", line)
+                if not m:
+                    continue
+                v = [int(x) for x in m.group(2).split()]
+                idle = v[3] + (v[4] if len(v) > 4 else 0)
+                cur[m.group(1) or "all"] = (sum(v), idle)
+        load = {}
+        if self.prev:
+            for k, (tot, idle) in cur.items():
+                ptot, pidle = self.prev.get(k, (tot, idle))
+                dt = tot - ptot
+                load[k] = round(100.0 * (dt - (idle - pidle)) / dt, 1) if dt else 0.0
+        self.prev = cur
+        with self.lock:
+            self.load = load
+            bat = battery()
+            if bat.get("charge_uah") is not None:
+                self.battery_hist.append((time.time(), bat["charge_uah"],
+                                          bat.get("voltage_v") or 3.8))
+                self.battery_hist = [h for h in self.battery_hist
+                                     if h[0] > time.time() - 1800]
+
+    def power_from_history(self):
+        """Watts from the change of charge_now over the last 30 minutes."""
+        with self.lock:
+            h = list(self.battery_hist)
+        if len(h) < 2 or h[-1][1] == h[0][1]:
+            return None
+        # From the first change to the last change of the reading, since
+        # the gauge moves in 1% steps.
+        changes = [i for i in range(1, len(h)) if h[i][1] != h[i - 1][1]]
+        if len(changes) < 2:
+            return None
+        a, b = h[changes[0]], h[changes[-1]]
+        hours = (b[0] - a[0]) / 3600.0
+        if hours <= 0:
+            return None
+        return round((a[1] - b[1]) / 1e6 * (a[2] + b[2]) / 2 / hours, 2)
+
+
+MONITOR = Monitor()
+
+
+def estimate_watts(bat):
+    """Discharge power: from the gauge's time-to-empty, or else from how fast
+    the charge reading falls (the CW2015 does not measure current)."""
+    tte = bat.get("time_to_empty_min")
+    if tte and bat.get("charge_uah") and bat.get("voltage_v"):
+        return round(bat["charge_uah"] / 1e6 * bat["voltage_v"] / (tte / 60), 2)
+    return MONITOR.power_from_history()
+
+
+def battery():
+    b = "/sys/class/power_supply/cw2015-battery"
+    out = {}
+    if os.path.isdir(b):
+        out = {
+            "capacity": read_int(b + "/capacity"),
+            "status": read(b + "/status"),
+            "voltage_v": (read_int(b + "/voltage_now") or 0) / 1e6 or None,
+            "charge_uah": read_int(b + "/charge_now"),
+            "full_uah": read_int(b + "/charge_full"),
+            "time_to_empty_min": (read_int(b + "/time_to_empty_now") or 0) // 60
+            or None,
+        }
+    out["ac"] = read_int("/sys/class/power_supply/dc-charger/online") == 1
+    for p in sorted(os.listdir("/sys/class/power_supply")):
+        if p.startswith("tcpm-source"):
+            d = "/sys/class/power_supply/" + p
+            if read_int(d + "/online") == 1:
+                out["usb_c"] = {
+                    "volts": (read_int(d + "/voltage_now") or 0) / 1e6,
+                    "max_amps": (read_int(d + "/current_max") or 0) / 1e6,
+                }
+    return out
+
+
+def temperatures():
+    out = {}
+    for z in sorted(os.listdir("/sys/class/thermal")):
+        if not z.startswith("thermal_zone"):
+            continue
+        t = read_int("/sys/class/thermal/%s/temp" % z)
+        if t is not None:
+            out[read("/sys/class/thermal/%s/type" % z) or z] = round(t / 1000, 1)
+    return out
+
+
+def device_users():
+    """Programs that have the GPU or a video codec device open."""
+    names = {}
+    for v in glob_dir("/sys/class/video4linux"):
+        names["/dev/" + v] = read("/sys/class/video4linux/%s/name" % v) or v
+    users = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fd_dir = "/proc/%s/fd" % pid
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(os.path.join(fd_dir, fd))
+            except OSError:
+                continue
+            if target.startswith("/dev/dri/renderD") or target in names:
+                comm = read("/proc/%s/comm" % pid) or pid
+                users.setdefault(target, set()).add(comm)
+    gpu = sorted(set().union(*[u for d, u in users.items()
+                               if d.startswith("/dev/dri/renderD")] or [set()]))
+    video = [{"device": d, "name": names[d], "users": sorted(users[d])}
+             for d in sorted(names) if d in users]
+    return {"gpu_users": gpu, "video": video,
+            "video_devices": [names[d] for d in sorted(names)]}
+
+
+def glob_dir(path):
+    try:
+        return sorted(os.listdir(path))
+    except OSError:
+        return []
+
+
+def memory():
+    m = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            m[k] = int(v.split()[0]) // 1024
+    return {"total_mb": m.get("MemTotal"), "available_mb": m.get("MemAvailable"),
+            "swap_total_mb": m.get("SwapTotal"),
+            "swap_used_mb": (m.get("SwapTotal", 0) - m.get("SwapFree", 0)),
+            "gpu_buffers_mb": m.get("Unevictable")}
+
+
+# --- Power and hardware -------------------------------------------------------
+
+LEDS_DIR = "/sys/class/leds"
+CPU_DIR = "/sys/devices/system/cpu"
+MEM_SLEEP = "/sys/power/mem_sleep"
+REGULATORS = "/sys/kernel/debug/regulator/regulator_summary"
+TYPEC_PORT = "/sys/class/typec/port0"
+
+
+def read_num(path):
+    """The leading integer of a sysfs value such as "5000mV" (or None)."""
+    m = re.match(r"\s*(-?\d+)", read(path) or "")
+    return int(m.group(1)) if m else None
+
+
+def selected(value):
+    """The [selected] word of a sysfs choice list such as "s2idle [deep]"."""
+    m = re.search(r"\[([^\]]+)\]", value or "")
+    return m.group(1) if m else None
+
+
+def choices(value):
+    return (value or "").replace("[", "").replace("]", "").split()
+
+
+def board_leds():
+    """The board's LEDs: green:power and red:standby on the Pinebook Pro
+    (not the keyboard's or the MMC hosts' LEDs)."""
+    out = []
+    for name in glob_dir(LEDS_DIR):
+        if name.startswith(("input", "mmc")) or "::" in name:
+            continue
+        d = os.path.join(LEDS_DIR, name)
+        trig = read(d + "/trigger") or ""
+        out.append({"name": name,
+                    "brightness": read_int(d + "/brightness", 0),
+                    "max": read_int(d + "/max_brightness", 1),
+                    "trigger": selected(trig) or "none",
+                    "triggers": choices(trig)})
+    return out
+
+
+def set_led(name, mode):
+    """mode: "on", "off" or one of the LED's triggers. Writes only what
+    differs, so a blinking trigger is not restarted."""
+    d = os.path.join(LEDS_DIR, name)
+    trigger = selected(read(d + "/trigger")) or "none"
+    if mode in ("on", "off"):
+        level = read_int(d + "/max_brightness", 1) if mode == "on" else 0
+        if trigger != "none":
+            write(d + "/trigger", "none")
+        if read_int(d + "/brightness") != level:
+            write(d + "/brightness", level)
+    elif trigger != mode:
+        write(d + "/trigger", mode)
+
+
+def wifi_power_save():
+    try:
+        out = subprocess.run(["iw", "dev", "wlan0", "get", "power_save"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"Power save:\s*(on|off)", out)
+    return m.group(1) == "on" if m else None
+
+
+def set_wifi_power_save(on):
+    try:
+        subprocess.run(["iw", "dev", "wlan0", "set", "power_save",
+                        "on" if on else "off"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("iw power_save: %s", e)
+
+
+def cpus_online():
+    """{"1": True, ...} for the CPUs that can be switched off (not cpu0)."""
+    out = {}
+    for name in glob_dir(CPU_DIR):
+        m = re.fullmatch(r"cpu(\d+)", name)
+        if m and os.path.exists("%s/%s/online" % (CPU_DIR, name)):
+            out[m.group(1)] = read("%s/%s/online" % (CPU_DIR, name)) == "1"
+    return out
+
+
+def mem_sleep():
+    v = read(MEM_SLEEP)
+    return {"current": selected(v), "options": choices(v)} if v else None
+
+
+def apply_power(settings):
+    p = settings.get("power") or {}
+    for name, mode in (p.get("leds") or {}).items():
+        set_led(name, mode)
+    for cpu, on in (p.get("cpus_online") or {}).items():
+        path = "%s/cpu%s/online" % (CPU_DIR, cpu)
+        if os.path.exists(path) and (read(path) == "1") != on:
+            write(path, "1" if on else "0")
+    ms = mem_sleep()
+    if p.get("mem_sleep") and ms and ms["current"] != p["mem_sleep"]:
+        write(MEM_SLEEP, p["mem_sleep"])
+    if p.get("wifi_power_save") is not None and \
+            wifi_power_save() not in (None, p["wifi_power_save"]):
+        set_wifi_power_save(p["wifi_power_save"])
+
+
+def power_supplies():
+    """Every power supply's uevent properties (battery, DC, USB-C)."""
+    out = {}
+    for name in glob_dir("/sys/class/power_supply"):
+        props = {}
+        for line in (read("/sys/class/power_supply/%s/uevent" % name) or "").splitlines():
+            k, _, v = line.partition("=")
+            props[k.replace("POWER_SUPPLY_", "").lower()] = v
+        out[name] = props
+    return out
+
+
+def usb_c():
+    """The USB-C port: roles and what the charger offers (PD source PDOs)."""
+    if not os.path.isdir(TYPEC_PORT):
+        return None
+    out = {"power_role": selected(read(TYPEC_PORT + "/power_role")),
+           "data_role": selected(read(TYPEC_PORT + "/data_role")),
+           "power_operation_mode": read(TYPEC_PORT + "/power_operation_mode"),
+           "partner": os.path.isdir(TYPEC_PORT + "-partner"),
+           "pdos": []}
+    caps = TYPEC_PORT + "-partner/usb_power_delivery/source-capabilities"
+    for pdo in glob_dir(caps):
+        d = os.path.join(caps, pdo)
+        if not os.path.isdir(d):
+            continue
+        out["pdos"].append({
+            "type": pdo.split(":", 1)[-1],
+            "mv": read_num(d + "/voltage") or read_num(d + "/maximum_voltage"),
+            "min_mv": read_num(d + "/minimum_voltage"),
+            "ma": read_num(d + "/maximum_current"),
+        })
+    return out
+
+
+def regulators():
+    """RK808 and the other regulators: voltage, users, consumers (debugfs)."""
+    text = read(REGULATORS)
+    out = []
+    for line in (text or "").splitlines()[2:]:
+        t = line.split()
+        if len(t) >= 9 and t[5].endswith("mV"):
+            if t[0] == "regulator-dummy":
+                out.append(None)
+                continue
+            out.append({"name": t[0], "use": int(t[1]) if t[1].isdigit() else 0,
+                        "mv": int(t[5][:-2]) if t[5][:-2].isdigit() else None,
+                        "consumers": []})
+        elif out and out[-1] is not None and 1 <= len(t) <= 4 and \
+                not t[0].endswith("mA"):
+            out[-1]["consumers"].append(t[0])
+    return [r for r in out if r]
+
+
+def suspend_stats():
+    d = "/sys/power/suspend_stats"
+    keys = ("success", "fail", "last_failed_dev", "last_failed_errno",
+            "last_failed_step")
+    return {k: read(d + "/" + k) for k in keys} if os.path.isdir(d) else {}
+
+
+def power_info():
+    return {
+        "supplies": power_supplies(),
+        "usb_c": usb_c(),
+        "regulators": regulators(),
+        "suspend": suspend_stats(),
+        "leds": board_leds(),
+        "wifi_power_save": wifi_power_save(),
+        "cpus_online": cpus_online(),
+        "mem_sleep": mem_sleep(),
+        "settings": load_settings()["power"],
+    }
+
+
+def read_dt(name):
+    try:
+        with open(os.path.join(DT, name), "rb") as f:
+            return [s.decode(errors="replace") for s in f.read().split(b"\0") if s]
+    except OSError:
+        return []
+
+
+def mmc_info(block):
+    """eMMC or SD card: name, size, and the bus mode it runs at (debugfs)."""
+    dev = os.path.realpath("/sys/block/%s/device" % block)
+    host = os.path.basename(dev).split(":")[0]
+    ios = read("/sys/kernel/debug/%s/ios" % host) or ""
+    clock = re.search(r"^clock:\s*(\d+)", ios, re.M)
+    timing = re.search(r"^timing spec:\s*\d+\s*\(([^)]*)\)", ios, re.M)
+    width = re.search(r"^bus width:\s*\d+\s*\((\d+) bits\)", ios, re.M)
+    return {
+        "block": block,
+        "host": host,
+        "type": read(dev + "/type"),
+        "name": read(dev + "/name"),
+        "date": read(dev + "/date"),
+        "size_gb": round((read_int("/sys/block/%s/size" % block) or 0) * 512 / 1e9, 1),
+        "clock_mhz": round(int(clock.group(1)) / 1e6) if clock else None,
+        "timing": timing.group(1) if timing else None,
+        "bus_bits": int(width.group(1)) if width else None,
+    }
+
+
+def firmware_lines():
+    try:
+        out = subprocess.run(["dmesg"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    found = {}
+    m = re.search(r"brcmfmac: brcmf_c_preinit_dcmds: Firmware: (.*)", out)
+    if m:
+        found["wifi"] = m.group(1).strip()
+    m = re.search(r"Bluetooth: hci0: BCM: (.*firmware.*|.*\.hcd.*)", out)
+    if m:
+        found["bluetooth"] = m.group(1).strip()
+    return found
+
+
+def hardware_info():
+    cpu = []
+    for p in policies():
+        cpu.append({"name": "Cortex-A53" if p["id"] == "little" else "Cortex-A72",
+                    "cpus": p["cpus"],
+                    "max_mhz": (read_int(p["path"] + "/cpuinfo_max_freq") or 0) // 1000,
+                    "min_mhz": (read_int(p["path"] + "/cpuinfo_min_freq") or 0) // 1000})
+    displays = []
+    for c in glob_dir("/sys/class/drm"):
+        d = "/sys/class/drm/" + c
+        if "-" in c and read(d + "/status") == "connected":
+            displays.append({"connector": c.split("-", 1)[1],
+                             "mode": ((read(d + "/modes") or "").splitlines() or [None])[0]})
+    usb = []
+    for dev in glob_dir("/sys/bus/usb/devices"):
+        d = "/sys/bus/usb/devices/" + dev
+        if ":" in dev or not os.path.exists(d + "/idVendor"):
+            continue
+        if read(d + "/bDeviceClass") == "09":  # hubs
+            continue
+        usb.append({"name": " ".join(filter(None, (read(d + "/manufacturer"),
+                                                   read(d + "/product")))) or dev,
+                    "id": "%s:%s" % (read(d + "/idVendor"), read(d + "/idProduct")),
+                    "speed_mbps": read(d + "/speed")})
+    inputs = re.findall(r'^N: Name="([^"]*)"', read("/proc/bus/input/devices") or "", re.M)
+    pci = []
+    for dev in glob_dir("/sys/bus/pci/devices"):
+        d = "/sys/bus/pci/devices/" + dev
+        pci.append({"slot": dev, "id": "%s:%s" % (read(d + "/vendor"), read(d + "/device")),
+                    "class": read(d + "/class")})
+    thermal = []
+    for z in glob_dir("/sys/class/thermal"):
+        if not z.startswith("thermal_zone"):
+            continue
+        d = "/sys/class/thermal/" + z
+        trips = []
+        for n in range(16):
+            t = read_int("%s/trip_point_%d_temp" % (d, n))
+            if t is None:
+                break
+            trips.append({"type": read("%s/trip_point_%d_type" % (d, n)),
+                          "c": round(t / 1000)})
+        thermal.append({"name": read(d + "/type"), "c": round((read_int(d + "/temp") or 0) / 1000, 1),
+                        "trips": trips})
+    lsb = dict(l.split("=", 1) for l in (read("/etc/lsb-release") or "").splitlines()
+               if "=" in l)
+    net = {}
+    if os.path.isdir("/sys/class/net/wlan0"):
+        net = {"driver": os.path.basename(os.path.realpath(
+                   "/sys/class/net/wlan0/device/driver")),
+               "mac": read("/sys/class/net/wlan0/address"),
+               "chip": read("/sys/class/net/wlan0/device/device")}
+    gpu_driver = os.path.basename(os.path.realpath("/sys/class/drm/renderD128/device/driver"))
+    return {
+        "model": (read_dt("model") or ["?"])[0],
+        "compatible": read_dt("compatible"),
+        "cpu": cpu,
+        "memory_mb": memory()["total_mb"],
+        "storage": [mmc_info(b) for b in glob_dir("/sys/block")
+                    if re.fullmatch(r"mmcblk\d+", b)],
+        "nvme": [b for b in glob_dir("/sys/block") if b.startswith("nvme")],
+        "pci": pci,
+        "displays": displays,
+        "gpu": {"driver": gpu_driver,
+                "compatible": read_dt("gpu@ff9a0000/compatible")},
+        "video": [read("/sys/class/video4linux/%s/name" % v)
+                  for v in glob_dir("/sys/class/video4linux")],
+        "audio": [l.strip() for l in (read("/proc/asound/cards") or "").splitlines()
+                  if re.match(r"\s*\d+ \[", l)],
+        "wifi": net,
+        "bluetooth": glob_dir("/sys/class/bluetooth"),
+        "firmware": firmware_lines(),
+        "usb": usb,
+        "input": inputs,
+        "thermal": thermal,
+        "rtc": read("/sys/class/rtc/rtc0/name"),
+        "kernel": os.uname().release,
+        "os": {"version": lsb.get("CHROMEOS_RELEASE_VERSION"),
+               "milestone": lsb.get("CHROMEOS_RELEASE_CHROME_MILESTONE"),
+               "board": lsb.get("CHROMEOS_RELEASE_BOARD"),
+               "track": lsb.get("CHROMEOS_RELEASE_TRACK")},
+        "uptime_s": int(float((read("/proc/uptime") or "0").split()[0])),
+    }
+
+
+MIGRATE = "/usr/sbin/pinebook-migrate"
+
+
+def migrate_cmd(*args):
+    try:
+        r = subprocess.run([MIGRATE] + list(args), capture_output=True, text=True,
+                           timeout=60)
+        return json.loads(r.stdout or "{}")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        return {"error": str(e)}
+
+
+def migrate_info():
+    info = migrate_cmd("status")
+    info["targets"] = migrate_cmd("targets")
+    bat = battery()
+    info["power_ok"] = bool(bat.get("ac") or bat.get("usb_c")) or \
+        (bat.get("capacity") or 0) >= 50
+    return info
+
+
+def status():
+    load = MONITOR.load
+    cpu = []
+    for p in policies():
+        path = p["path"]
+        cpu.append({
+            "id": p["id"],
+            "name": "Cortex-A53" if p["id"] == "little" else "Cortex-A72",
+            "cpus": p["cpus"],
+            "cur_khz": read_int(path + "/scaling_cur_freq"),
+            "max_khz": read_int(path + "/scaling_max_freq"),
+            "hw_max_khz": read_int(path + "/cpuinfo_max_freq"),
+            "governor": read(path + "/scaling_governor"),
+            "load": [load.get(str(c)) for c in p["cpus"]],
+        })
+    gpu = {}
+    if os.path.isdir(GPU_DEVFREQ):
+        gpu = {"cur_hz": read_int(GPU_DEVFREQ + "/cur_freq"),
+               "max_hz": read_int(GPU_DEVFREQ + "/max_freq"),
+               "governor": read(GPU_DEVFREQ + "/governor")}
+    bat = battery()
+    bat["est_watts"] = estimate_watts(bat) if bat.get("status") == "Discharging" else None
+    return {
+        "time": time.time(),
+        "cpu": cpu,
+        "cpu_load": load.get("all"),
+        "gpu": gpu,
+        "temps": temperatures(),
+        "battery": bat,
+        "memory": memory(),
+        "accel": device_users(),
+        "uptime_s": int(float((read("/proc/uptime") or "0").split()[0])),
+    }
+
+
+def settings_info():
+    s = load_settings()
+    pol = {p["id"]: p for p in policies()}
+    return {
+        "settings": s,
+        "applied": profile_limits(s),
+        "profiles": PROFILES,
+        "little_freqs": avail_freqs(pol["little"]["path"]) if "little" in pol else [],
+        "big_freqs": avail_freqs(pol["big"]["path"]) if "big" in pol else [],
+        "cpu_governors": (read(pol["big"]["path"] + "/scaling_available_governors")
+                          or "").split() if "big" in pol else [],
+        "gpu_freqs": gpu_freqs(),
+        "gpu_governors": (read(GPU_DEVFREQ + "/available_governors") or "").split(),
+        "overclock_levels": {k: {t: [hz // 1000000 for hz, _ in v[t]] for t in v}
+                             for k, v in OVERCLOCK.items()},
+        "undervolt_steps": UNDERVOLT_STEPS,
+        "tune_file": read_tune_file(),
+        "boot_logs": boot_logs_enabled(),
+        "google_keys": google_keys_info(),
+        "running_tables": running_tables(),
+        "tune_tables": {k: [(hz // 1000000, v // 1000) for hz, v, _ in rows]
+                        for k, rows in tune_tables(s["tune"]).items()},
+    }
+
+
+# --- HTTP -------------------------------------------------------------------
+
+TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
+         ".css": "text/css", ".png": "image/png", ".svg": "image/svg+xml",
+         ".webmanifest": "application/manifest+json"}
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "pinebook-control"
+
+    def log_message(self, fmt, *args):
+        log.debug(fmt, *args)
+
+    def host_ok(self):
+        host = (self.headers.get("Host") or "").lower()
+        host = re.sub(r":%d$" % PORT, "", host)
+        return host in HOSTS
+
+    def send(self, code, body, ctype="text/plain; charset=utf-8"):
+        data = body if isinstance(body, bytes) else body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, obj, code=200):
+        self.send(code, json.dumps(obj), "application/json")
+
+    def do_GET(self):
+        if not self.host_ok():
+            return self.send(421, "Use http://pinebook.localhost:%d/\n" % PORT)
+        path = self.path.split("?", 1)[0]
+        if path == "/api/status":
+            return self.send_json(status())
+        if path == "/api/settings":
+            return self.send_json(settings_info())
+        if path == "/api/power":
+            return self.send_json(power_info())
+        if path == "/api/hardware":
+            return self.send_json(hardware_info())
+        if path == "/api/migrate":
+            return self.send_json(migrate_info())
+        if path == "/api/history":
+            with MONITOR.lock:
+                return self.send_json(list(MONITOR.history))
+        if path == "/":
+            path = "/index.html"
+        name = os.path.basename(path)
+        file = os.path.join(WEB, name)
+        if "/" in path[1:] or not os.path.isfile(file):
+            return self.send(404, "Not found\n")
+        with open(file, "rb") as f:
+            self.send(200, f.read(),
+                      TYPES.get(os.path.splitext(name)[1], "application/octet-stream"))
+
+    def do_POST(self):
+        if not self.host_ok():
+            return self.send(421, "Use http://pinebook.localhost:%d/\n" % PORT)
+        origin = self.headers.get("Origin")
+        if not self.headers.get("X-Pinebook") or (origin and origin not in ORIGINS):
+            return self.send(403, "Forbidden\n")
+        if self.path == "/api/migrate":
+            return self.post_migrate()
+        if self.path != "/api/settings":
+            return self.send(404, "Not found\n")
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(n, 65536)) or b"{}")
+            old = load_settings()
+            new = validate(body)
+        except (ValueError, TypeError) as e:
+            return self.send_json({"error": "bad request: %s" % e}, 400)
+        save_settings(new)
+        applied = apply_limits(new)
+        if "power" in body:
+            apply_power(new)
+            # A CPU that comes back online starts with the default limits.
+            applied = apply_limits(new)
+        result = {"applied": applied, "reboot_needed": False}
+        if "google_keys" in body:
+            try:
+                set_google_keys(body["google_keys"])
+                result["relogin_needed"] = True
+            except (OSError, ValueError, AttributeError) as e:
+                result["error"] = str(e)
+        if isinstance(body.get("boot_logs"), bool):
+            try:
+                set_boot_logs(body["boot_logs"])
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
+                result["error"] = "Could not change %s: %s" % (NOLOGS_NAME, e)
+        if body.get("tune") is not None and new["tune"] != (read_tune_file() or
+                                                            DEFAULTS["tune"]):
+            try:
+                write_tune(new["tune"])
+                result["reboot_needed"] = True
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
+                log.error("Writing %s: %s", TUNE_NAME, e)
+                new["tune"] = old["tune"]
+                save_settings(new)
+                result["error"] = "Could not write %s: %s" % (TUNE_NAME, e)
+        self.send_json(result)
+
+
+    def post_migrate(self):
+        """{"target": "/dev/mmcblk2", "erase_confirmed": true} schedules the
+        move for the next boot, {"target": null} cancels it, {"reboot": true}
+        restarts now."""
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+        except ValueError as e:
+            return self.send_json({"error": "bad request: %s" % e}, 400)
+        if body.get("reboot"):
+            self.send_json({"rebooting": True})
+            subprocess.Popen(["reboot"])
+            return None
+        if body.get("target") is None:
+            return self.send_json(migrate_cmd("cancel"))
+        opts = json.dumps(body.get("options") or {})
+        if body.get("preview"):
+            return self.send_json(migrate_cmd("preview", "--target", str(body["target"]),
+                                              "--options", opts))
+        if body.get("erase_confirmed") is not True:
+            return self.send_json({"error": "erase not confirmed"}, 400)
+        if not migrate_info()["power_ok"]:
+            return self.send_json({"error": "Подключи зарядку: копирование "
+                                   "займёт несколько минут"}, 400)
+        log.info("Moving the system to %s at the next boot", body["target"])
+        return self.send_json(migrate_cmd("schedule", "--target", str(body["target"]),
+                                          "--options", opts))
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+
+class Server6(Server):
+    address_family = socket.AF_INET6
+
+
+def main():
+    logging.basicConfig(
+        level=logging.INFO, stream=sys.stderr,
+        format="pinebook-control: %(levelname)s %(message)s")
+    try:
+        apply_power(load_settings())
+        apply_limits(load_settings())
+    except Exception:  # The service is still useful without the limits.
+        log.exception("Applying the saved settings")
+    threading.Thread(target=MONITOR.run, daemon=True).start()
+    servers = [Server(("127.0.0.1", PORT), Handler)]
+    try:
+        servers.append(Server6(("::1", PORT), Handler))
+    except OSError as e:
+        log.info("Not listening on [::1]:%d: %s", PORT, e)
+    for s in servers[1:]:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    log.info("Listening on http://pinebook.localhost:%d/", PORT)
+    servers[0].serve_forever()
+
+
+if __name__ == "__main__":
+    main()

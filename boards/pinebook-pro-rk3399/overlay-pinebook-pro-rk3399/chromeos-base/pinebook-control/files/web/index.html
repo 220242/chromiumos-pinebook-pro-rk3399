@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinebook</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <img src="icon.svg" alt="" width="28" height="28">
+  <h1>Pinebook</h1>
+  <nav>
+    <button class="tab active" data-tab="monitor">Мониторинг</button>
+    <button class="tab" data-tab="power">Питание</button>
+    <button class="tab" data-tab="hardware">Железо</button>
+    <button class="tab" data-tab="settings">Настройки</button>
+  </nav>
+  <button id="overlay" title="Маленькое окно поверх всех окон">Оверлей</button>
+</header>
+
+<main>
+<section id="monitor" class="page">
+  <div class="grid">
+    <div class="card">
+      <h2>Процессор <span id="cpu-load" class="badge"></span></h2>
+      <div id="cpu"></div>
+    </div>
+    <div class="card">
+      <h2>Видеоядро Mali-T860</h2>
+      <div id="gpu"></div>
+    </div>
+    <div class="card">
+      <h2>Температура</h2>
+      <div id="temps"></div>
+    </div>
+    <div class="card">
+      <h2>Питание</h2>
+      <div id="power"></div>
+    </div>
+    <div class="card">
+      <h2>Аппаратное ускорение</h2>
+      <div id="accel"></div>
+    </div>
+    <div class="card">
+      <h2>Память</h2>
+      <div id="memory"></div>
+    </div>
+  </div>
+</section>
+
+<section id="power" class="page" hidden>
+  <div class="grid">
+    <div class="card wide">
+      <h2>За последние 3 часа</h2>
+      <canvas id="chart" height="160"></canvas>
+      <p class="hint" id="chart-legend"></p>
+    </div>
+    <div class="card">
+      <h2>Батарея</h2>
+      <div id="battery"></div>
+    </div>
+    <div class="card">
+      <h2>Зарядка</h2>
+      <div id="charger"></div>
+    </div>
+    <div class="card">
+      <h2>Управление</h2>
+      <div id="power-controls" class="form"></div>
+      <p class="hint">Применяется сразу и сохраняется после перезагрузки.</p>
+    </div>
+    <div class="card">
+      <h2>Сон</h2>
+      <div id="sleep"></div>
+    </div>
+    <div class="card wide">
+      <h2>Шины питания (PMIC RK808 и преобразователи)</h2>
+      <p class="hint">Напряжения и потребители каждой шины. Регулировать их
+        напрямую ядро не даёт; напряжения ядер CPU и GPU меняются через
+        разгон и андервольтинг в «Настройках».</p>
+      <div id="rails"></div>
+    </div>
+  </div>
+</section>
+
+<section id="hardware" class="page" hidden>
+  <div class="grid" id="hw"></div>
+</section>
+
+<section id="settings" class="page" hidden>
+  <div class="card">
+    <h2>Режим работы</h2>
+    <p class="hint">Применяется сразу и сохраняется после перезагрузки.</p>
+    <div id="profiles" class="segmented"></div>
+    <div id="custom" class="form" hidden>
+      <label>Cortex-A53, максимум <select id="little_max"></select></label>
+      <label>Cortex-A72, максимум <select id="big_max"></select></label>
+      <label>Регулятор CPU <select id="cpu_governor"></select></label>
+      <label>GPU, максимум <select id="gpu_max"></select></label>
+      <label>Регулятор GPU <select id="gpu_governor"></select></label>
+    </div>
+    <p id="applied" class="hint"></p>
+  </div>
+
+  <div class="card">
+    <h2>Вход в аккаунт Google</h2>
+    <p class="hint">Сборке Chromium нужны свои ключи Google API. Впиши их и выйди из
+      сеанса: Chrome запустится заново уже с ними. Вместо этого можно положить
+      файл <code>google-api-keys.txt</code> со строками
+      <code>GOOGLE_API_KEY=…</code>, <code>GOOGLE_DEFAULT_CLIENT_ID=…</code>,
+      <code>GOOGLE_DEFAULT_CLIENT_SECRET=…</code> на EFI-SYSTEM.</p>
+    <p id="keys-state" class="hint"></p>
+    <div class="form">
+      <label>Ключ API <input id="api_key" autocomplete="off" spellcheck="false"></label>
+      <label>Client ID <input id="client_id" autocomplete="off" spellcheck="false"
+        placeholder="…apps.googleusercontent.com"></label>
+      <label>Client secret <input id="client_secret" type="password" autocomplete="off"></label>
+    </div>
+    <button id="keys-save" class="primary">Сохранить ключи</button>
+    <button id="keys-clear">Удалить</button>
+  </div>
+
+  <div class="card">
+    <h2>Логи загрузки</h2>
+    <label class="row"><span>Сохранять логи каждой загрузки в logs/ на EFI-SYSTEM</span>
+      <input type="checkbox" id="boot-logs"></label>
+    <p class="hint">Работает со следующей загрузки. Выключить можно и из Windows:
+      создай на EFI-SYSTEM пустой файл <code>pinebook-nologs</code>.
+      <code>sudo pinebook-collect</code> работает всегда.</p>
+  </div>
+
+  <div class="card warn">
+    <h2>Перенос системы на eMMC или NVMe</h2>
+    <p class="hint">Переносит всю настроенную систему как есть: аккаунты, файлы,
+      настройки, Linux и Android. Копирование идёт при следующей загрузке, до
+      входа в систему, и занимает от нескольких минут до получаса (на экране
+      видно ход). Не выключай ноутбук и держи зарядку подключённой.
+      Выбранный диск <b>полностью стирается</b>. С eMMC ноутбук потом
+      загружается сам, карту можно вынуть; если оставить её, загрузится
+      копия. С NVMe загрузчик остаётся на карте или eMMC: SSD сам
+      по себе не загружается. Чтобы снова загрузиться с карты, удали на её
+      EFI-SYSTEM файл <code>pinebook-boot-emmc</code> (или
+      <code>pinebook-boot-nvme</code>).</p>
+    <div id="migrate-targets" class="form"></div>
+    <details id="migrate-advanced">
+      <summary>Расширенный режим: что переносить и как разметить диск</summary>
+      <div class="form">
+        <label>Что переносить
+          <select id="mig-mode">
+            <option value="full">Всё: аккаунты, файлы, настройки, Linux, Android</option>
+            <option value="clean">Чистую систему: без аккаунтов и данных, как после сброса</option>
+          </select></label>
+        <label>Место под Android в конце диска, ГБ
+          <input type="number" id="mig-android" min="0" step="1" value="25" style="min-width:90px"></label>
+        <div class="segmented" id="mig-presets">
+          <button data-android="0">Без Android</button>
+          <button data-android="8">Android 8 ГБ</button>
+          <button data-android="16">16 ГБ</button>
+          <button data-android="25">25 ГБ</button>
+          <button data-android="half">Пополам</button>
+        </div>
+        <label><span>Перенести данные Android (приложения и их файлы)</span>
+          <input type="checkbox" id="mig-copy-android" checked></label>
+        <label><span>Загружаться с нового диска<br><small class="hint">иначе карта
+          останется основной, а копия будет запасной</small></span>
+          <input type="checkbox" id="mig-switch" checked></label>
+        <label><span>Перезагрузиться сразу после копирования</span>
+          <input type="checkbox" id="mig-reboot" checked></label>
+      </div>
+      <button id="mig-preview">Показать разметку</button>
+      <div id="mig-layout"></div>
+    </details>
+    <label class="row"><span id="migrate-confirm-text">Я понимаю, что всё на выбранном диске будет стёрто</span>
+      <input type="checkbox" id="migrate-confirm"></label>
+    <button id="migrate-go" class="primary">Перенести при следующей загрузке</button>
+    <button id="migrate-cancel">Отменить</button>
+    <button id="migrate-reboot">Перезагрузить сейчас</button>
+    <p id="migrate-state" class="hint"></p>
+    <details><summary>Журнал последнего переноса</summary><pre id="migrate-log" class="hint"></pre></details>
+  </div>
+
+  <div class="card warn">
+    <h2>Разгон и андервольтинг</h2>
+    <p class="hint">Меняет таблицы частот и напряжений в загрузчике, работает
+      после перезагрузки. Если ноутбук после этого не загружается или
+      зависает, удали файл <code>pinebook-tune.scr</code> с раздела
+      EFI-SYSTEM карты (виден в Windows) — вернутся заводские значения.</p>
+    <div class="form">
+      <label>Разгон
+        <select id="overclock">
+          <option value="off">Выключен (A53 1416 МГц, A72 1800 МГц)</option>
+          <option value="mild">Умеренный (A53 1512 МГц, A72 1992 МГц)</option>
+          <option value="strong">Сильный (A53 1608 МГц, A72 2088 МГц)</option>
+        </select>
+      </label>
+      <label>Андервольтинг CPU <select id="cpu_undervolt_mv"></select></label>
+      <label>Андервольтинг GPU <select id="gpu_undervolt_mv"></select></label>
+    </div>
+    <button id="tune-apply" class="primary">Сохранить для следующей загрузки</button>
+    <p id="tune-state" class="hint"></p>
+    <details>
+      <summary>Таблицы частот</summary>
+      <div id="tables"></div>
+    </details>
+  </div>
+</section>
+</main>
+
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

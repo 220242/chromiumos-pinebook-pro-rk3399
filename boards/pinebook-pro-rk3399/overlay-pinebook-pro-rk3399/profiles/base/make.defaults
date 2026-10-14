@@ -29,3 +29,26 @@ USE="${USE} -vkms"
 # the firmware of the RK3399 cdn-dp block, used for DisplayPort over USB-C.
 # The AP6256 Wi-Fi/Bluetooth firmware comes from sys-firmware/ap6256-firmware.
 LINUX_FIRMWARE="-iwlwifi-all rockchip-dptx"
+
+# No TPM on the Pinebook Pro. With encrypted stateful, chromeos_startup
+# cannot load the TPM system key and reboots on every boot (boot loop seen on
+# the hardware); keep /var and /home/chronos on the plain stateful partition.
+USE="${USE} -encrypted_stateful"
+
+# No TPM at all: like ChromeOS Flex, let the system run without one. Without
+# this, chromeos_startup opens /dev/tpm0 to extend a PCR and the TPM library
+# exits the process with status 1 when the device is missing (boot loop).
+USE="${USE} tpm_insecure_fallback"
+
+# Linux development environment (Crostini). The kernel has KVM (the boot
+# ROM hands over at EL2: "Hyp mode initialized") and vhost-vsock; kvm_host
+# adds crosvm, vm_concierge and the Termina VM image (termina-dlc, preloaded
+# by build_image).
+USE="${USE} kvm_host"
+
+# No hardware overlay planes in Chrome: everything is composited on the GPU.
+# With overlays, opening the Camera app made Chrome's DRM thread allocate
+# scanout buffers (rockchip dumb buffers, pinned RAM) until 3.4 GB were gone
+# and the kernel killed Chrome's processes. Only libchromeos-use-flags
+# (/etc/ui_use_flags.txt) reads this flag; Chrome itself is unchanged.
+USE="${USE} set_hw_overlay_strategy_none"

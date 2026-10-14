@@ -1,0 +1,72 @@
+#!/bin/bash
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+#
+# Bring-up: collect logs and hardware state from the running system.
+# On the Pinebook Pro: Ctrl+Alt+F2, log in as chronos (password test0000),
+# then run:
+#   sudo pinebook-collect
+# Saves everything to logs/collect-<time>/ on the card's EFI-SYSTEM disk
+# (readable from Windows) and on any FAT USB drive the boot logger mounted.
+
+if [[ ${EUID} -ne 0 ]]; then
+	exec sudo "$0" "$@"
+fi
+
+stamp=$(date +%Y%m%d-%H%M%S)
+tmp=$(mktemp -d)
+cd "${tmp}" || exit 1
+
+run() { # run NAME CMD...: save a command's output as NAME.txt
+	local name=$1; shift
+	{ echo "\$ $*"; "$@"; } > "${name}.txt" 2>&1
+}
+
+run uptime      uptime
+run cmdline     cat /proc/cmdline
+run dmesg       dmesg
+run jobs        initctl list
+run ps          ps -eo pid,ppid,stat,wchan:32,etime,args
+run mounts      cat /proc/mounts
+run df          df -h
+run lsmod       lsmod
+run dri         sh -c 'ls -la /dev/dri /sys/class/drm; cat /sys/kernel/debug/dri/*/name 2>/dev/null'
+run gpu         sh -c 'ls -la /sys/class/devfreq; grep -r . /sys/bus/platform/drivers/panfrost 2>/dev/null | head'
+run modules-dt  sh -c 'cat /sys/firmware/devicetree/base/gpu@*/compatible 2>/dev/null | tr "\0" "\n"; modinfo panfrost 2>&1 | head -20'
+run deferred    sh -c 'cat /sys/kernel/debug/devices_deferred; ls -la /sys/bus/platform/devices/ff9a0000.gpu/; cat /sys/bus/platform/devices/ff9a0000.gpu/waiting_for_supplier'
+run net         sh -c 'ip -d link; ip addr'
+run wifi        sh -c 'iw dev; iw dev wlan0 link; iw reg get; wpa_cli -i wlan0 status; ls -la /lib/firmware/brcm/ | grep -iE "43456|4345C5|pinebook"; dmesg | grep -iE "brcmf|cfg80211|wlan"'
+run lsusb       sh -c 'lsusb 2>/dev/null || ls /sys/bus/usb/devices'
+run input       cat /proc/bus/input/devices
+run power       sh -c 'for p in /sys/class/power_supply/*; do echo "== $p"; cat "$p/uevent"; done'
+run alsa        sh -c 'cat /proc/asound/cards; ls -la /dev/snd'
+run memory      sh -c 'cat /proc/meminfo; echo; cat /sys/block/zram0/mm_stat 2>/dev/null; echo; ps -eo pid,rss,vsz,args --sort=-rss | head -25'
+run dri-clients sh -c 'for f in /sys/kernel/debug/dri/*/clients /sys/kernel/debug/dri/*/framebuffer; do echo "== $f"; cat "$f"; done'
+run video       sh -c 'ls -l /dev/video-* /dev/media-* /dev/media* 2>&1; for v in /sys/class/video4linux/*; do echo "$v: $(cat $v/name)"; done; ls -l /proc/[0-9]*/fd 2>/dev/null | grep -E "/dev/(video|media|dri)" | sort | uniq -c'
+run audio       sh -c 'amixer -c 0 contents 2>&1 | head -150; cras_test_client --dump_server_info 2>&1 | head -80; ls -laR /usr/share/alsa/ucm'
+run cpufreq     sh -c 'grep . /sys/devices/system/cpu/cpufreq/policy*/scaling_* /sys/class/devfreq/*/cur_freq /sys/class/devfreq/*/governor /sys/class/thermal/thermal_zone*/temp 2>/dev/null'
+run vm          sh -c 'ls -l /dev/kvm /dev/vhost-vsock; initctl status vm_concierge; ls -la /run/imageloader /var/cache/dlc-images 2>/dev/null'
+run chrome-keys sh -c 'crossystem cros_debug; echo; grep -c "^GOOGLE_" /etc/chrome_dev.conf; grep " /etc/chrome_dev.conf " /proc/mounts; for p in $(pgrep -x chrome | head -1); do tr "\0" "\n" < /proc/$p/environ | grep -c ^GOOGLE_; done; grep pinebook-chrome-keys /var/log/messages | tail -5'
+run selinux     sh -c 'getenforce 2>/dev/null; grep -c "avc:  denied" /var/log/messages 2>/dev/null'
+mkdir -p var_log
+cp -r /var/log/messages /var/log/net.log /var/log/ui /var/log/chrome /var/log/power_manager \
+	/var/log/upstart.log /var/log/boot.log /var/log/bootstat var_log/ 2>/dev/null
+ls -la /var/spool/crash /home/chronos/crash > crash-list.txt 2>&1
+mkdir -p user_log && cp /home/chronos/u-*/log/chrome* user_log/ 2>/dev/null
+
+saved=0
+for mnt in /run/pinebook-boot-logs/*/; do
+	[[ -d ${mnt} ]] || continue
+	out=${mnt}logs/collect-${stamp}
+	mkdir -p "${out}" && cp -r "${tmp}"/. "${out}/" && sync -f "${out}" && {
+		echo "Saved: ${out}"
+		saved=1
+	}
+done
+if (( ! saved )); then
+	mkdir -p /var/log/pinebook-collect
+	cp -r "${tmp}" "/var/log/pinebook-collect/${stamp}"
+	echo "No FAT disk mounted; saved to /var/log/pinebook-collect/${stamp}"
+fi
+rm -rf "${tmp}"
+echo "Done. You can power off now."

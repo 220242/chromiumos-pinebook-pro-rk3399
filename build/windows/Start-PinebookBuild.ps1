@@ -12,8 +12,14 @@ which defaults to the output\ folder of this repository on Windows.
 Which steps to run: Preflight, Sync, Build or All (default). Several are allowed.
 
 .PARAMETER Stage
-Build stages passed to build.sh (overlay, sdk, board, packages, image).
+Build stages passed to build.sh (overlay, sdk, board, packages, image,
+export, patch).
 Default: all of them.
+
+.PARAMETER Package
+Packages for the patch stage: rebuilt and installed into the last built image
+instead of running build_image again, e.g.
+-Stage overlay,patch -Package chromeos-base/chromeos-bsp-pinebook-pro-rk3399
 
 .PARAMETER Board
 Board to build. Default: BOARD_NAME from boards/pinebook-pro-rk3399/board.conf.
@@ -52,10 +58,12 @@ param(
     [ValidateSet('Preflight', 'Sync', 'Build', 'All')]
     [string[]]$Step = @('All'),
 
-    [ValidateSet('overlay', 'sdk', 'board', 'packages', 'image')]
+    [ValidateSet('overlay', 'sdk', 'board', 'packages', 'image', 'export', 'patch')]
     [string[]]$Stage = @(),
 
     [string]$Board = '',
+
+    [string[]]$Package = @(),
 
     [string]$Distro = '',
 
@@ -131,6 +139,7 @@ if ($Board) { $envArgs += "BOARD=$Board" }
 if ($ChromiumOSRoot) { $envArgs += "CHROMIUMOS_ROOT=$ChromiumOSRoot" }
 if ($ManifestBranch) { $envArgs += "MANIFEST_BRANCH=$ManifestBranch" }
 if ($DryRun) { $envArgs += 'DRY_RUN=1' }
+if ($Package) { $envArgs += "PATCH_PACKAGES=$($Package -join ' ')" }
 
 $runAll = $Step -contains 'All'
 $started = Get-Date

@@ -1,0 +1,3 @@
+# Bring-up (Pinebook Pro): trace chromeos_startup, which exits with status 1
+# without logging why. Same arguments as startup.conf.
+exec /usr/sbin/pinebook-startup-trace --verbosity=1 --encrypted_stateful

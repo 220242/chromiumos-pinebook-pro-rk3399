@@ -1,0 +1,18 @@
+# Chrome finds the V4L2 codecs through these names (media/gpu/v4l2): without
+# /dev/video-dec0 it decodes every video in software ("Could not open
+# /dev/video-dec0"). RK3399: rkvdec does H.264, HEVC and VP9; the Hantro
+# VPU does VP8 and MPEG-2 decoding and the encoders.
+ACTION!="add", GOTO="media_end"
+SUBSYSTEM!="video4linux", GOTO="v4l_end"
+
+ATTR{name}=="rkvdec", SYMLINK+="video-dec0"
+ATTR{name}=="rockchip,rk3399-vpu-dec", SYMLINK+="video-dec1"
+ATTR{name}=="rockchip,rk3399-vpu-enc", SYMLINK+="video-enc0"
+
+LABEL="v4l_end"
+SUBSYSTEM!="media", GOTO="media_end"
+
+ATTR{model}=="rkvdec", SYMLINK+="media-dec0", ENV{MEDIA_DEVICE_TYPE}="decoder"
+ATTR{model}=="hantro-vpu", SYMLINK+="media-dec1", ENV{MEDIA_DEVICE_TYPE}="decoder"
+
+LABEL="media_end"
