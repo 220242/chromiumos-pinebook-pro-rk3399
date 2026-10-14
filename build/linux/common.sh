@@ -7,7 +7,8 @@
 #   DEPOT_TOOLS      depot_tools checkout; default: ~/depot_tools
 #   MANIFEST_URL     default: https://chromium.googlesource.com/chromiumos/manifest
 #   MANIFEST_BRANCH  default: stable (the newest main snapshot with prebuilt
-#                    binaries, Chrome included); or main, release-R130-16033.B
+#                    binary packages); or main, release-R130-16033.B. Chrome
+#                    is built from source either way (the board's package.use)
 #   IMAGE_TYPE       base | dev | test; default: test
 #   OUTPUT_DIR       where finished images and logs go; default: <repo>/output
 #   JOBS             parallel jobs; default: nproc

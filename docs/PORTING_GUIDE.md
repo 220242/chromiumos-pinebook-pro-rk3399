@@ -1,468 +1,110 @@
-# ChromiumOS board porting guide for PineBook Pro RK3399
-
-This document outlines the step-by-step process to set up a ChromiumOS board definition and bring up the PineBook Pro RK3399 platform.
-
-## Prerequisites
-
-Before starting, you must have:
-
-1. A Linux build machine (Ubuntu 20.04+ recommended)
-2. ChromiumOS source tree and `cros_sdk` environment
-3. A working PineBook Pro board (for testing)
-4. Serial console access (USB-to-TTL adapter on UART pins)
-5. Flashing tools: `dd`, `fastboot`, or ChromiumOS flash utilities
-6. Reference kernel and U-Boot from Pine64 or Armbian
-
-## Step 1: Verify board hardware and revision
-
-**Goal**: Confirm exact hardware before porting.
-
-### 1.1 Physical inspection
-
-```bash
-# Boot into any Linux distribution on your PineBook Pro
-# Log in and check hardware details:
-
-lsblk                           # storage devices
-cat /proc/cpuinfo               # CPU and core info
-free -h                         # memory
-dmesg | grep -i rockchip        # SoC detection
-cat /sys/class/dmi/id/product_name   # board model (if available)
-```
-
-### 1.2 Identify storage controllers
-
-```bash
-# Check device enumeration
-lsblk -f                        # filesystems and block devices
-cat /proc/partitions            # partition table
-dmesg | grep -iE 'mmc|sd|nvme'  # storage subsystem messages
-
-# For eMMC:
-ls -la /dev/mmcblk2*            # should exist if eMMC is present
-
-# For microSD:
-ls -la /dev/mmcblk1*            # should exist when SD card is inserted
-
-# For NVMe (if adapter plugged):
-ls -la /dev/nvme*               # should exist if NVMe enumeration works
-```
-
-### 1.3 Document board revision
-
-Record in your project notes:
-
-- Board PCB revision (check silkscreen)
-- CPU package marking (A72/A53 cluster information)
-- Memory (4GB LPDDR4 on every unit)
-- eMMC capacity and speed class
-- Wireless module (AMPAK AP6256: Broadcom BCM43456 Wi-Fi + BCM4345C5 Bluetooth)
-- Display panel model (if identifiable)
-
-**Example**: `PineBook Pro | RK3399 | 4GB LPDDR4 | 64GB eMMC | AP6256 | 14" 1080p IPS panel`
-
-## Step 2: Set up ChromiumOS build environment
-
-**Goal**: Have a working `cros_sdk` and source tree.
-
-### 2.1 Install ChromiumOS dependencies
-
-```bash
-sudo apt update
-sudo apt install -y \
-  build-essential python3 python-is-python3 \
-  git curl wget ca-certificates \
-  pkg-config libssl-dev uuid-dev \
-  unzip zip rsync lsb-release \
-  libcurses-ocaml-dev libncurses5-dev libncurses-dev \
-  libc6-dev-arm64 g++-arm-linux-gnueabihf
-```
-
-### 2.2 Clone ChromiumOS manifest and source
-
-```bash
-mkdir -p ~/chromiumos
-cd ~/chromiumos
-
-# Initialize repo (Google's tool for managing multiple git repos)
-curl https://storage.googleapis.com/git-repo-downloads/repo > repo
-chmod +x repo
-./repo init -u https://chromium.googlesource.com/chromiumos/manifest -b main
-
-# This will prompt for your git configuration
-./repo sync -j4    # sync all repositories (takes time and disk space)
-```
-
-### 2.3 Enter the ChromiumOS SDK
-
-```bash
-cd ~/chromiumos
-# This will download and set up a containerized build environment
-./cros_sdk --enter
-```
-
-You should now be inside the ChromiumOS SDK.
-
-## Step 3: Create board definition
-
-**Goal**: Add `pinebook-pro-rk3399` board to ChromiumOS.
-
-### 3.1 Board directory structure
-
-```bash
-# Inside cros_sdk
-
-BOARD_DIR="~/trunk/src/overlays/overlay-pinebook-pro-rk3399"
-mkdir -p "${BOARD_DIR}"
-cd "${BOARD_DIR}"
-
-# Create the overlay structure
-mkdir -p board-files/{firmware,kernel,dtb}
-mkdir -p profiles/base
-```
-
-### 3.2 Create board configuration files
-
-**File**: `~/trunk/src/overlays/overlay-pinebook-pro-rk3399/profiles/base/make.defaults`
-
-```makefile
-# ChromiumOS board make defaults for PineBook Pro RK3399
-BOARD_OVERLAY := "overlay-pinebook-pro-rk3399"
-BOARD_USE_NATIVE_CHROME := "yes"
-BOARD_CAN_USE_FAST_MENUCONFIG := "yes"
-DEFAULT_PROFILE_NAME := "base"
-
-# Architecture
-ARCH := "arm64"
-KERNEL_ARCH := "arm64"
-
-# Bootloader
-EFIEFI := "0"
-DEVELOPER_IMAGE := "1"
-TEST_IMAGE := "1"
-VM_IMAGE := "1"
-```
-
-**File**: `~/trunk/src/overlays/overlay-pinebook-pro-rk3399/make.conf`
-
-```bash
-# Additional board-specific make configuration
-SIGN_IMAGES = "recovery kernel"
-KERNEL_DEFCONFIG = "pinebook_pro_defconfig"
-U_BOOT_DEFCONFIG = "pinebook-pro-rk3399"
-```
-
-### 3.3 Create board.conf for the project
-
-Copy the board.conf from this repository to your overlay:
-
-```bash
-cp /path/to/this/repo/boards/pinebook-pro-rk3399/board.conf \
-  "${BOARD_DIR}/board.conf"
-```
-
-## Step 4: Kernel configuration and device tree
-
-**Goal**: Integrate Linux kernel with PineBook Pro support.
-
-### 4.1 Download Pine64 or Armbian kernel sources
-
-```bash
-# Inside cros_sdk
-cd ~/trunk/src/third_party/kernel
-
-# Add remote for Pine64 kernel fork
-git remote add pine64 https://github.com/pine64/linux.git
-git fetch pine64
-
-# Check out PineBook Pro branch
-git checkout pine64/pinebook-pro    # or appropriate branch
-```
-
-### 4.2 Apply kernel config fragments
-
-```bash
-# Copy common config
-cp /path/to/this/repo/boards/pinebook-pro-rk3399/kernel-config/common.config \
-  kernel/arch/arm64/configs/pinebook_pro_common.config
-
-# Copy storage-specific fragments
-cp /path/to/this/repo/boards/pinebook-pro-rk3399/kernel-config/emmc.config \
-  kernel/arch/arm64/configs/pinebook_pro_emmc.config
-cp /path/to/this/repo/boards/pinebook-pro-rk3399/kernel-config/microsd.config \
-  kernel/arch/arm64/configs/pinebook_pro_microsd.config
-cp /path/to/this/repo/boards/pinebook-pro-rk3399/kernel-config/nvme.config \
-  kernel/arch/arm64/configs/pinebook_pro_nvme.config
-```
-
-### 4.3 Device tree integration
-
-Copy device tree overlays to kernel source:
-
-```bash
-cp /path/to/this/repo/boards/pinebook-pro-rk3399/overlays/*.dts \
-  ~/trunk/src/third_party/kernel/arch/arm64/boot/dts/rockchip/
-```
-
-Edit the appropriate `.dts` file to match your exact board configuration:
-
-```bash
-# View and edit the eMMC device tree
-vim ~/trunk/src/third_party/kernel/arch/arm64/boot/dts/rockchip/pinebook-pro-rk3399-emmc.dts
-```
-
-## Step 5: U-Boot bootloader setup
-
-**Goal**: Configure U-Boot for PineBook Pro boot flow.
-
-### 5.1 Use upstream U-Boot
-
-Mainline U-Boot has supported the Pinebook Pro since v2020.07, so no fork is needed. The board overlay builds it with `sys-boot/pinebook-pro-u-boot` (U-Boot 2024.10).
-
-```bash
-git clone https://source.denx.de/u-boot/u-boot.git
-cd u-boot
-git checkout v2024.10
-```
-
-### 5.2 Build with the existing defconfig
-
-The upstream defconfig is `configs/pinebook-pro-rk3399_defconfig`. Do not copy or hand-edit a generic RK3399 config.
-
-```bash
-# BL31 comes from upstream TF-A (make PLAT=rk3399 bl31)
-export BL31=/path/to/trusted-firmware-a/build/rk3399/release/bl31/bl31.elf
-make CROSS_COMPILE=aarch64-linux-gnu- pinebook-pro-rk3399_defconfig
-make CROSS_COMPILE=aarch64-linux-gnu-
-```
-
-Output: `u-boot-rockchip.bin` (`idbloader.img` + `u-boot.itb`), written at sector 64 of the boot media.
-
-## Step 6: Firmware and binary blobs
-
-**Goal**: Gather firmware needed for boot and hardware support.
-
-### 6.1 Boot firmware
-
-Upstream U-Boot initialises DDR in its own TPL, so the Rockchip `rkbin` DDR and mini-loader blobs are not needed. The only extra boot firmware is TF-A BL31 from 5.2, built from source.
-
-### 6.2 Wireless firmware (AMPAK AP6256, Broadcom)
-
-```bash
-# Broadcom Wi-Fi firmware from linux-firmware
-git clone --depth 1 https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git ~/linux-firmware
-mkdir -p ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/brcm
-cp ~/linux-firmware/brcm/brcmfmac43456-sdio.* \
-  ~/chromiumos/src/overlays/overlay-pinebook-pro-rk3399/board-files/firmware/brcm/
-```
-
-Expect at minimum, under `/lib/firmware/brcm/`:
-- `brcmfmac43456-sdio.bin` and `brcmfmac43456-sdio.clm_blob` (Wi-Fi firmware, linux-firmware)
-- `brcmfmac43456-sdio.pine64,pinebook-pro.txt` (board NVRAM; take it from Manjaro or Armbian firmware if your linux-firmware lacks it)
-- `BCM4345C5.hcd` (Bluetooth patch RAM, from Manjaro or Armbian firmware)
-
-## Step 7: Build Linux baseline (pre-ChromiumOS)
-
-**Goal**: Validate Linux boot before integrating ChromiumOS.
-
-### 7.1 Build kernel
-
-```bash
-cd ~/trunk/src/third_party/kernel
-
-# For eMMC target
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- pinebook_pro_emmc_defconfig
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) dtbs
-
-# Output:
-# - arch/arm64/boot/Image
-# - arch/arm64/boot/dts/rockchip/pinebook-pro-rk3399-emmc.dtb
-```
-
-### 7.2 Build U-Boot
-
-```bash
-cd ~/trunk/src/third_party/u-boot
-
-# BL31 must point at the TF-A bl31.elf (see 5.2)
-make CROSS_COMPILE=aarch64-linux-gnu- pinebook-pro-rk3399_defconfig
-make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
-
-# Output:
-# - u-boot-rockchip.bin (idbloader.img + u-boot.itb)
-```
-
-## Step 8: Flash and test on hardware
-
-**Goal**: Validate boot on your PineBook Pro board.
-
-### 8.1 Prepare eMMC
-
-```bash
-# WARNING: This will overwrite your eMMC. Back up any data first!
-
-# On your build machine:
-BOARD_TARGET="/dev/sdX"  # Replace X with your eMMC/adapter device
-
-# Write U-Boot (idbloader + u-boot.itb) at sector 64
-sudo dd if=u-boot-rockchip.bin of="${BOARD_TARGET}" seek=64 bs=512 conv=notrunc
-
-# Write kernel at offset (example: 8192)
-sudo dd if=arch/arm64/boot/Image of="${BOARD_TARGET}" seek=8192 bs=512 conv=notrunc
-
-# Write device tree
-sudo dd if=arch/arm64/boot/dts/rockchip/pinebook-pro-rk3399-emmc.dtb \
-  of="${BOARD_TARGET}" seek=16384 bs=512 conv=notrunc
-```
-
-### 8.2 Boot and capture logs
-
-```bash
-# Connect serial console (USB-TTL adapter)
-# Settings: 1500000 baud, 8N1
-
-# Insert eMMC or SD card into PineBook Pro
-# Power on and observe boot sequence
-
-# Capture complete boot log:
-screen /dev/ttyUSB0 1500000
-# or
-picocom -b 1500000 /dev/ttyUSB0
-```
-
-### 8.3 Verify key milestone messages
-
-```
-[typical boot sequence]
-ROM code init...
-SPL loads...
-U-Boot main starts...
-Loading kernel from....
-Loading device tree...
-Linux kernel boot message...
-Rockchip platform init...
-eMMC/SD controller init...
-Storage devices detected: /dev/mmcblk2 (eMMC)
-Keyboard and touchpad input...
-[OK] System booted successfully
-```
-
-## Step 9: Integration into ChromiumOS build system
-
-**Goal**: Connect the PineBook Pro board to ChromiumOS build flow.
-
-### 9.1 Add board to ChromiumOS list
-
-```bash
-# Inside cros_sdk
-ls ~/trunk/src/overlays/overlay-*/
-
-# Your board overlay should appear in the list
-ls ~/trunk/src/overlays/overlay-pinebook-pro-rk3399/
-```
-
-### 9.2 Build ChromiumOS image
-
-```bash
-# Inside cros_sdk
-build_packages --board=pinebook-pro-rk3399
-build_image --board=pinebook-pro-rk3399 --image_types=dev,recovery
-```
-
-### 9.3 Flash ChromiumOS to eMMC
-
-```bash
-# The build system generates ChromiumOS images
-# Use cros flash utility or dd
-
-TARGET_DEVICE="/dev/sdX"  # your eMMC or adapter
-IMAGE_PATH="~/trunk/src/build/images/pinebook-pro-rk3399/latest/"
-
-cros flash --board=pinebook-pro-rk3399 "${TARGET_DEVICE}" "${IMAGE_PATH}/recovery_image.bin"
-```
-
-## Step 10: Storage-specific builds and testing
-
-**Goal**: Validate eMMC, microSD, and NVMe boot independently.
-
-### 10.1 eMMC build
-
-```bash
-# Internal install target (microSD in 10.2 is the primary bring-up target)
-build_image --board=pinebook-pro-rk3399 --image_types=dev,recovery
-```
-
-### 10.2 microSD build
-
-```bash
-# Create a microSD-specific overlay or board
-# (May require creating overlay-pinebook-pro-rk3399-microsd)
-
-build_image --board=pinebook-pro-rk3399-microsd --image_types=dev,recovery
-```
-
-### 10.3 NVMe build
-
-```bash
-# Create a NVMe-specific build
-# (May require creating overlay-pinebook-pro-rk3399-nvme)
-
-build_image --board=pinebook-pro-rk3399-nvme --image_types=dev,recovery
-```
-
-## Step 11: Hardware-specific tuning
-
-**Goal**: Fix remaining hardware issues.
-
-### 11.1 Display and backlight
-
-Update device tree with exact panel timings:
-
-```bash
-vim ~/trunk/src/third_party/kernel/arch/arm64/boot/dts/rockchip/pinebook-pro-rk3399-common.dtsi
-
-# Add or update panel node with correct timings from Armbian/Pine64 source
-```
-
-### 11.2 Audio codec configuration
-
-Enable the ES8316 audio codec (`CONFIG_SND_SOC_ES8316`, `simple-audio-card` on I2S1). The upstream device tree already describes it.
-
-### 11.3 Wi-Fi/Bluetooth setup
-
-Enable `brcmfmac` (Wi-Fi on SDIO) and `hci_uart` with `hci_bcm` (Bluetooth on UART0) in the kernel, and install the AP6256 firmware from 6.2 in the rootfs.
-
-## Step 12: Final validation checklist
-
-Before considering the port "done":
-
-- [ ] eMMC boot works reliably
-- [ ] microSD boot works as fallback
-- [ ] NVMe boot works (if targeting)
-- [ ] Display shows ChromiumOS login screen
-- [ ] Keyboard and touchpad input functional
-- [ ] Wi-Fi/Bluetooth connect and scan
-- [ ] Audio output works (speaker and headphone)
-- [ ] Battery status displays correctly
-- [ ] Suspend/resume cycle works
-- [ ] Performance is acceptable
-- [ ] No kernel panics or oops messages
-
-## Summary
-
-The PineBook Pro RK3399 ChromiumOS port is a multi-stage process:
-
-1. Verify hardware and gather specs
-2. Set up ChromiumOS SDK
-3. Create board definition
-4. Integrate kernel and U-Boot
-5. Gather firmware and drivers
-6. Build and test Linux baseline
-7. Integrate into ChromiumOS build system
-8. Flash and validate on hardware
-9. Storage-specific testing (eMMC, microSD, NVMe)
-10. Hardware tuning (display, audio, wireless, power)
-11. Final validation and release
-
-Each stage builds on the previous one. Don't skip to ChromiumOS integration until Linux baseline works.
+# How the port is put together
+
+ChromiumOS supports a new board through a board overlay: a Portage overlay
+that says how to build the kernel, which firmware and drivers to install,
+and how to lay out the disk. This document walks through this port's
+overlay, the boot flow, and the problems the Pinebook Pro raised on the way
+to a working desktop, for anyone changing it or porting another RK3399
+device.
+
+## The pieces
+
+| Piece | Where | What it does |
+|-------|-------|--------------|
+| Board overlay | `boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/` | Everything below. `build.sh overlay` copies it to `~/chromiumos/src/overlays/`, where `setup_board --board=pinebook-pro-rk3399` finds it |
+| Base | `profiles/base/parent`, `metadata/layout.conf` | Inherits `arm64-generic`: a buildable generic arm64 board (unibuild config, GLES, the usual ChromeOS packages) |
+| Toolchain | `toolchain.conf` | `aarch64-cros-linux-gnu`, plus `arm-none-eabi` for the Cortex-M0 firmware inside TF-A |
+| Board settings | `profiles/base/make.defaults` | Kernel 6.6 with device tree, Panfrost, CPU flags, firmware, USE flags for no TPM, Crostini, Waydroid, no overlays |
+| Kernel | `kernel/`, `profiles/base/profile.bashrc` | ChromeOS kernel 6.6 plus `kernel/pinebook-pro.config`, the upstream device tree, `Image` and dtb in `/boot/pinebook-pro/` ([DRIVERS_FIRMWARE.md](DRIVERS_FIRMWARE.md)) |
+| Disk layout | `scripts/disk_layout.json` | 16 MiB RWFW for U-Boot, ext4 ROOT-A, 5 GiB STATE ([STORAGE.md](STORAGE.md)) |
+| Boot loader | `sys-boot/pinebook-pro-u-boot`, `../install-u-boot.sh` | Upstream U-Boot 2024.10 with TF-A 2.10, written at sector 64 when the image is exported |
+| BSP | `chromeos-base/chromeos-bsp-pinebook-pro-rk3399` | `boot.scr`, sound (UCM), video device names (udev), boot logs, log collector, STATE grow |
+| `virtual/chromeos-bsp` | version 3 | Pulls in the BSP (and Waydroid). It must stay above arm64-generic's version 2, and `profiles/base/package.mask` masks that one, so the build stops instead of quietly using it |
+| Graphics | `virtual/opengles`, `minigbm/panfrost.c` | Mesa Panfrost, and a Panfrost backend for minigbm |
+| Firmware | `sys-firmware/ap6256-firmware` | Wi-Fi and Bluetooth files for the AP6256 |
+| Apps | `chromeos-base/pinebook-control`, `chromeos-base/pinebook-waydroid` and the Waydroid stack | The Pinebook app, Google keys, moving the system; Android ([WAYDROID.md](WAYDROID.md)) |
+
+The overlay's [README](../boards/pinebook-pro-rk3399/overlay-pinebook-pro-rk3399/README.md)
+lists it file by file.
+
+## Boot flow
+
+1. The RK3399 boot ROM starts a U-Boot: Manjaro's on the eMMC (the path
+   used on the project's laptop), or the card's when the eMMC has none
+   ([STORAGE_STRATEGY.md](STORAGE_STRATEGY.md#how-each-disk-boots)).
+2. U-Boot runs `boot.scr`: our `bootcmd` loads `/boot/pinebook-pro/boot.scr`
+   from ROOT-A; Manjaro's finds the copy in the root of EFI-SYSTEM.
+3. `boot.scr` hands over to the eMMC or SSD copy if the system was moved;
+   otherwise it loads `Image` and the device tree from ROOT-A, sets the GPU
+   compatible, applies `pinebook-tune.scr` if present, builds the command line
+   and runs `booti`.
+4. The kernel mounts ROOT-A by PARTUUID, read-only, and starts upstart. Along
+   ChromiumOS's own jobs:
+
+| Job | Starts | Does |
+|-----|--------|------|
+| `pinebook-boot-logs` | `start on startup` | Logs every boot to EFI-SYSTEM and FAT USB drives |
+| `pinebook-migrate` | `start on starting startup` | Moves the system to another disk, only when `pinebook.migrate=1` |
+| `pinebook-grow-stateful` | `start on started boot-services` | Grows STATE into the card, once |
+| `pinebook-chrome-keys` | `start on starting ui` | Gives Chrome the Google API keys and video logging flags |
+| `pinebook-control` | `start on started system-services` | The Pinebook app's service |
+| `pinebook-android` | at login | Android's service ([WAYDROID.md](WAYDROID.md)) |
+
+## From the first build to a working desktop
+
+The order in which the laptop's problems showed up and were fixed, so that
+the reasons behind the overlay's settings are not lost:
+
+| Date | Problem | Fix |
+|------|---------|-----|
+| 2026-10-06 | `build_image` failed under WSL2: the WSL2 kernel's ext2 has no extended attributes for SELinux labels | ROOT-A as ext4 without a journal |
+| 2026-10-06 | arm64-generic's `package.use` was undone by copying its USE flags into the board profile | `make.defaults` starts with `USE=""` |
+| 2026-10-06 | The image had no boot loader | `install-u-boot.sh` at export, inside a 16 MiB RWFW |
+| 2026-10-11 | Manjaro's U-Boot on the eMMC starts first and never looked at ROOT-A | `boot.scr` also in the root of EFI-SYSTEM, which its standard boot scans |
+| 2026-10-11 | The boot did not reach the desktop, and there was no serial cable to see why | `pinebook-boot-logs`: logs to EFI-SYSTEM, readable from Windows |
+| 2026-10-11 | Reboot loop: `chromeos_startup` could not load the TPM system key | `-encrypted_stateful` |
+| 2026-10-12 | `chromeos_startup` exited silently, found by tracing it (`pinebook-startup-trace`): it opened `/dev/tpm0` to extend a PCR | `tpm_insecure_fallback` |
+| 2026-10-12 | Boot logo forever: Chrome found no GPU | Panfrost built in, and `boot.scr` sets the compatible the ChromeOS kernel's Panfrost binds to |
+| 2026-10-12 | Wi-Fi did not connect (`disconnect-failure`) | `brcmfmac.feature_disable=0x82000`: the handshake stays in `wpa_supplicant` |
+| 2026-10-12 | Login broke after `trunksd` was disabled | Change reverted: cryptohome needs the TPM services, a crashing `trunksd` is harmless |
+| 2026-10-12 | The Camera app made Chrome eat all memory in display buffers | `set_hw_overlay_strategy_none` |
+| 2026-10-12 | Google sign-in failed: a Chromium build has no API keys | `pinebook-chrome-keys` and your own keys |
+| 2026-10-12 | 5 GB STATE on a 64 GB card | `pinebook-grow-stateful`, leaving 25 GiB for Android |
+| 2026-10-13 | Video decoded on the CPU: Chrome found no `/dev/video-dec0`, and minigbm had no backend for Panfrost | udev names and `minigbm/panfrost.c`; Chrome still decodes on the CPU, investigation continues |
+| 2026-10-13 | Android's container did not start: LXC's root mount point was under `/var`, which the image cannot ship | LXC built with `/usr/lib/lxc/rootfs`; waiting for a test |
+| 2026-10-13 | YouTube live streams did not play: the prebuilt Chromium has no H.264 or AAC | Chrome built from source with `chrome_media` |
+
+## Lessons
+
+For the SDK's own rules (EAPI 7, `oom score`, nothing under `/var`,
+Manifests), see
+[build/README.md](../build/README.md#rules-the-sdk-taught-us). Beyond those:
+
+- **Logs first.** Without a serial cable, the boot logs on a FAT partition
+  were what made each fix possible. `printk.devkmsg=on` keeps userspace
+  messages in the kernel log, and `hung_task_panic=0` turns a hang into a
+  stack trace instead of a reboot.
+- **No TPM means two USE flags, not removed services.** ChromeOS expects a
+  TPM everywhere; `-encrypted_stateful` and `tpm_insecure_fallback` are
+  enough.
+- **The SDK refuses host tools under their plain names.** U-Boot and TF-A
+  get `cros_allow_gnu_build_tools` and prefixed compilers; the kernel hook
+  passes the same tools `cros-kernel` uses.
+- **Read-only sources.** minigbm builds out of tree from the checkout, so the
+  hook builds a private copy with the Panfrost backend.
+- **Upstream first.** The device tree, U-Boot and TF-A are upstream releases
+  used as they are, so later upgrades stay simple.
+
+## Porting another RK3399 device
+
+The same structure works for other RK3399 laptops and boards:
+
+1. Copy the overlay under a new board name: the directory, `repo-name` in
+   `metadata/layout.conf`, `profiles/repo_name`, and `BOARD_NAME` in
+   `board.conf`.
+2. Point the kernel hook and `boot.scr` at the device's upstream `.dtb`.
+3. Check the kernel fragment against the device's chips (PMIC, codec, Wi-Fi,
+   panel).
+4. Use the device's U-Boot defconfig in `sys-boot/pinebook-pro-u-boot`.
+5. Replace the Wi-Fi firmware, the UCM files and, if the device has other
+   video blocks, the udev names.

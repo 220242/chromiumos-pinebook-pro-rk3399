@@ -14,7 +14,7 @@ Which steps to run: Preflight, Sync, Build or All (default). Several are allowed
 .PARAMETER Stage
 Build stages passed to build.sh (overlay, sdk, board, packages, image,
 export, patch).
-Default: all of them.
+Default: overlay, sdk, board, packages, image (image ends with export).
 
 .PARAMETER Package
 Packages for the patch stage: rebuilt and installed into the last built image
@@ -38,8 +38,9 @@ Must not be under /mnt/c, /mnt/d and so on.
 
 .PARAMETER ManifestBranch
 ChromiumOS manifest branch, e.g. stable, main or release-R130-16033.B.
-Default: stable, the newest main snapshot with prebuilt binaries (on main,
-Chrome usually has no prebuilt and is compiled from source for hours).
+Default: stable, the newest main snapshot with prebuilt binary packages.
+The board's package.use builds Chrome from source either way (many hours
+the first time; see build/README.md).
 
 .PARAMETER OutputDir
 Windows folder for the image and logs. Default: <repo>\output.
@@ -163,6 +164,6 @@ Write-Step ("Done in {0:hh\:mm\:ss}" -f $elapsed)
 $images = Get-ChildItem -Path (Join-Path $OutputDir 'images') -Filter '*.bin' -ErrorAction SilentlyContinue
 if ($images) {
     $images | ForEach-Object { Write-Host "Image: $($_.FullName)" }
-    Write-Host 'Write it to a microSD card with balenaEtcher, Rufus or Raspberry Pi Imager (see docs/WINDOWS_BUILD.md).'
+    Write-Host 'Write it to a microSD card with balenaEtcher or Rufus (see docs/USER_GUIDE.md).'
 }
 Write-Host "Logs: $(Join-Path $OutputDir 'logs')"

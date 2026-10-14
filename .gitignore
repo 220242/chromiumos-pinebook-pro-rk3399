@@ -1,5 +1,7 @@
-# Build results and logs written by build/linux/*.sh
+# Build results and logs written by build/linux/*.sh (OUTPUT_DIR), and
+# side-by-side output folders such as output-waydroid/
 /output/
+/output-*/
 
 # Disk images
 *.img

@@ -6,9 +6,11 @@ opens in its own window on the ChromiumOS desktop. Everything is set up and
 controlled from the **Android** app in the launcher (the page
 http://android.localhost), or from the `android` command in a shell.
 
-**Status:** the image builds with it, and on the Pinebook Pro the service
-starts at login and serves the page. Android itself has not run on the laptop
-yet. See "What was checked" and "Not verified yet" below.
+**Status:** on the Pinebook Pro the page works and setup downloads Android,
+but its container did not start: LXC's root mount point was under `/var`,
+which the image cannot ship. LXC 7.0.0-r1 moves it under `/usr`; that image
+waits for a test on the laptop. See "What was checked" and "Not verified yet"
+below.
 
 ## Using it
 
@@ -81,10 +83,11 @@ is too small for them and mounted `noexec`.
 - Writing a new image of the **same size** to the card keeps Android and its
   apps: the partition's file system is still there after the image. The page
   then offers to use it, and **Set up Android** only adds the partition back
-  and starts Android, without downloading it again: STATE grows to the same
-  place again, and the grow step does not touch a card whose free space
-  starts with Android's file system. An image of a different size can move
-  the partition's start, and Android is then set up from scratch.
+  and starts Android, without downloading it again. On a big card STATE grows
+  to the same place as before; on a smaller one the grow step finds Android's
+  file system right after the image and leaves the card as it is. An image
+  of a different size can move the partition's start, and Android is then set
+  up from scratch.
 - Everyone who logs in on the laptop shares the same Android.
 
 ## Google Play
@@ -131,6 +134,12 @@ Google only lets Play work on a registered device:
   lines (LXC here is built without both), so Android also does not get
   `CAP_SYS_TIME`, and the iptables `CHECKSUM` rule may fail without stopping
   the network.
+- **LXC** mounts the container's root at `/usr/lib/lxc/rootfs`: LXC's default
+  is under `/var/lib/lxc`, and anything the image installs under `/var` is
+  not there at run time (`/var` is on the stateful partition). ChromiumOS
+  mounts the cgroup v1 cpuset controller and LXC 7 no longer fills in
+  `cpuset.cpus` and `cpuset.mems` of the cgroups it creates, so the service
+  sets `cgroup.clone_children` in its own cpuset cgroup first.
 - **The service** (`pinebook-android`, an upstart job) starts when someone logs
   in and stops on logout. It runs as root and:
   - mounts `ANDROID-DATA` (creating it on first setup) at `/var/lib/waydroid`;
@@ -156,9 +165,11 @@ Google only lets Play work on a registered device:
 
 ## What was checked
 
-On the Pinebook Pro (guest session, SELinux enforcing): the `pinebook-android`
-job starts at login and the service listens on http://android.localhost; no
-SELinux denials so far.
+On the Pinebook Pro (SELinux enforcing): the `pinebook-android` job starts
+at login and the service listens on http://android.localhost; setup created
+ANDROID-DATA and downloaded Android; starting the container then failed
+with `Failed to access to "/var/lib/lxc/rootfs"`, which LXC 7.0.0-r1 fixes.
+No SELinux denials so far.
 
 In the ChromiumOS SDK (stable branch): the kernel and every package build, and
 `build_image` makes the image. Its root partition has Waydroid, LXC and the
@@ -202,17 +213,25 @@ camera, and clipboard sharing.
 
 ## Building
 
-The kernel config changed, so a full build is needed (`build_packages`, then
-`build_image`); the quick package patch does not cover the kernel. Portage
-does not rebuild the kernel when only `kernel/pinebook-pro.config` changes (the
-kernel's ebuild stays the same), so rebuild it explicitly:
+Every image has Waydroid: `profiles/base/make.defaults` sets the `waydroid`
+USE flag. After changing one of its packages, bump the ebuild's revision and
+patch it into the last image in minutes, listing every package that changed:
+
+```bash
+PATCH_PACKAGES="chromeos-base/pinebook-waydroid app-containers/lxc" build/linux/build.sh overlay patch
+```
+
+The kernel options are in `kernel/pinebook-pro.config`. Portage does not
+rebuild the kernel when only the fragment changes (the kernel's ebuild stays
+the same), so rebuild it explicitly, then patch it in
+([build/README.md](../build/README.md#which-build-for-which-change)):
 
 ```bash
 emerge-pinebook-pro-rk3399 sys-kernel/chromeos-kernel-6_6
 ```
 
-To check that every package Android needs can be installed, in a minute and
-without building anything:
+To check inside the SDK that every package Android needs can be installed,
+in a minute and without building anything:
 
 ```bash
 emerge-pinebook-pro-rk3399 -pv chromeos-base/pinebook-waydroid

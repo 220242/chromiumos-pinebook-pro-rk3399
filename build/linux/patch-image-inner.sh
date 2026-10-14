@@ -32,6 +32,8 @@ sudo rm -f /tmp/pinebook-patch-lsb-release
 
 selinux_config=${root}/etc/selinux/config
 if [[ -f ${selinux_config} ]]; then
+	# The image's own config (SELINUXTYPE=...), not a file in this repository.
+	# shellcheck source=/dev/null
 	selinux_type=$(source "${selinux_config}" && echo "${SELINUXTYPE}")
 	file_contexts=${root}/etc/selinux/${selinux_type}/contexts/files/file_contexts
 	echo ">>> Relabelling ${root} for SELinux"
