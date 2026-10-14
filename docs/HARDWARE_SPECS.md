@@ -1,218 +1,96 @@
-# PineBook Pro hardware specifications and revision notes
+# Pinebook Pro hardware
 
-This document provides the hardware baseline for the ChromiumOS port and captures board revision details.
+The Pinebook Pro's hardware as Linux sees it: what each part is, its driver,
+and where it sits in the device tree. Taken from the upstream device tree
+`arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts` (Linux 6.6, used
+unchanged by this port) and from the logs of the project's laptop. Whether
+each part works under ChromiumOS is in [HARDWARE.md](HARDWARE.md).
 
-## PineBook Pro hardware baseline
+Every Pinebook Pro has the same mainboard, 4 GB of RAM and the same chips;
+units differ in keyboard layout (ISO or ANSI) and in the eMMC module fitted.
+One device tree covers all of them.
 
-### SoC and CPU
-- **Processor**: Rockchip RK3399
-- **Architecture**: ARMv8-A big.LITTLE
-- **CPU cores**: 2x ARM Cortex-A72 (big) + 4x ARM Cortex-A53 (little)
-- **Max frequency**: A72 @ 2.0 GHz, A53 @ 1.5 GHz
-- **Cache**: L1 32KB/32KB (I/D per core), L2 1MB shared per cluster
+## Overview
 
-### Memory
-- **RAM**: 4GB LPDDR4 (every PineBook Pro ships with 4GB; there is no 8GB model)
-- **Memory controller**: integrated in RK3399
-- **Address map**: DRAM at `0x0`; RK3399 reserves the top 128MB of the 4GB window for MMIO, so about 3.875GB (`0x0`-`0xf8000000`) is usable
+| Part | What it is | Linux driver | Where |
+|------|-----------|--------------|-------|
+| SoC | Rockchip RK3399: 2x Cortex-A72 and 4x Cortex-A53 | | |
+| RAM | 4 GB LPDDR4; Linux sees about 3.7 GiB | | |
+| GPU | Arm Mali-T860 MP4 | `panfrost` | `gpu@ff9a0000` |
+| Display | 14.1" 1920x1080 IPS panel, BOE NV140FHM-N49, over eDP | `rockchipdrm` (VOP, `analogix_dp`), `panel-edp`, `pwm-backlight` | `edp`, `edp-panel`, `edp-backlight` |
+| Video | rkvdec decoder, Hantro VPU decoder and encoder, RGA 2D | `rkvdec` (staging), `hantro-vpu`, `rockchip-rga` | |
+| eMMC | removable module, 64 GB standard (128 GB offered), HS200 | `sdhci-of-arasan` | `sdhci`, alias `mmc2` |
+| microSD | UHS-I slot, run at SDR50 | `dwmmc_rockchip` | `sdmmc`, alias `mmc1` |
+| NVMe | optional M.2 adapter board on the internal PCIe connector | `pcie-rockchip-host`, `nvme` | `pcie0` |
+| SPI flash | 16 MB SPI NOR; this port does not use it | `spi-nor` | `spi1` |
+| Keyboard, touchpad | one USB device, "HAILUCK CO.,LTD USB KEYBOARD" (258a:001e), with keyboard, touchpad and media key interfaces | `usbhid`, `hid-multitouch` | internal USB |
+| Webcam | USB UVC camera (0c45:6321) behind an internal USB 2.0 hub (05e3:0608) | `uvcvideo` | internal USB |
+| Sound | Everest ES8316 codec on I2S1, speaker amplifier, headphone jack with detection, internal microphone | `snd_soc_es8316`, `simple-audio-card` | `i2c1` 0x11 |
+| Wi-Fi | AMPAK AP6256 (Broadcom BCM43456), 802.11ac, 2.4 and 5 GHz | `brcmfmac` | `sdio0`, alias `mmc0` |
+| Bluetooth | the same module: BCM4345C5, Bluetooth 5.0 | `hci_uart` (`hci_bcm`) | `uart0` with RTS/CTS |
+| PMIC | Rockchip RK808 | `rk808` | `i2c0` 0x1b |
+| CPU and GPU supplies | Silergy SYR827 (big cores), SYR828 (GPU) | `fan53555` | `i2c0` 0x40, 0x41 |
+| Battery | 10,000 mAh Li-ion; CW2015 fuel gauge | `cw2015_battery` | `i2c4` 0x62 |
+| USB-C | FUSB302 controller: USB 3.0, power delivery in both directions, DisplayPort alt mode in hardware | `fusb302`, `tcpm` | `i2c4` 0x22 |
+| DC jack | 5 V charger input | `gpio-charger` | `dc-charger` |
+| Lid, power button | GPIO keys | `gpio-keys` | `gpio-key-lid`, `gpio-key-power` |
+| LEDs | green (power), red (standby) | `leds-gpio` | `leds` |
+| Serial console | UART2 on the headphone jack, after the switch on the mainboard is moved | `8250_dw` | `uart2`, `ttyS2` |
 
-### GPU
-- **GPU type**: Mali-T860 MP4 (quad-core)
-- **GPU frequency**: typically 400-600 MHz
-- **Display pipeline**: built-in HDMI, eDP, DSI support
-- **Rendering**: OpenGL ES 3.1, Vulkan support
+Ports: one USB-C, one USB 3.0 Type-A, one USB 2.0 Type-A, the DC jack, the
+microSD slot and the headphone jack.
 
-### Storage controllers
+## CPU
 
-#### eMMC (internal)
-- **Controller**: Arasan SDHCI (`&sdhci`, `mmc@fe330000`), driver `sdhci-of-arasan` (`CONFIG_MMC_SDHCI_OF_ARASAN`)
-- **Module**: removable eMMC module, 64GB standard (128GB modules exist)
-- **Speed**: HS200 (upstream device tree sets `mmc-hs200-1_8v`)
-- **Device file**: `/dev/mmcblk2` (upstream alias `mmc2`)
-- **Partitions**: typically boot + rootfs + stateful
+| Cluster | Cores | Stock frequencies (device tree) | With the Pinebook app's overclock |
+|---------|-------|---------------------------------|-----------------------------------|
+| little | 4x Cortex-A53 | 408 to 1416 MHz | up to 1512 or 1608 MHz |
+| big | 2x Cortex-A72 | 408 to 1800 MHz | up to 1992 or 2088 MHz |
 
-#### microSD card slot
-- **Controller**: Synopsys DesignWare MMC (`&sdmmc`, `mmc@fe320000`), driver `dw_mmc-rockchip` (`CONFIG_MMC_DW_ROCKCHIP`)
-- **Protocol**: SD / UHS-I (upstream device tree enables SDR50)
-- **Device file**: `/dev/mmcblk1` (upstream alias `mmc1`; `mmc0` is the SDIO Wi-Fi bus)
-- **Supported capacities**: up to 1TB+ (SDXC compatible)
+The GPU runs from 200 to 800 MHz. The RK3399 is often quoted at 2.0 and
+1.5 GHz; the Pinebook Pro's device tree stops at 1.8 and 1.416 GHz, and
+going above that is what the overclock in the Pinebook app does.
 
-#### NVMe (optional upgrade)
-- **Connection**: optional PINE64 M.2 adapter board (M-key NVMe SSD) on the internal PCIe connector
-- **Controller**: RK3399 has a single PCIe 2.1 controller (`&pcie0`, up to x4 lanes); there is no second controller
-- **Driver**: `pcie-rockchip-host` + `phy-rockchip-pcie` + `nvme`
-- **Device file**: `/dev/nvme0n1`
-- **Boot**: the RK3399 boot ROM cannot boot from PCIe, so U-Boot stays on SPI flash, eMMC or microSD and only the root filesystem lives on NVMe
+## Disks and their names
 
-### Input devices
+The device tree's aliases fix the Linux names, whatever order the
+controllers probe in. U-Boot numbers the same controllers differently:
 
-#### Keyboard
-- **Type**: 80-key mechanical keyboard with custom layout
-- **Controller**: likely custom EC (embedded controller) or PS/2 compatible
-- **Interface**: matrix-based or USB HID
-- **Key layout**: Pinebook Pro specific, often with custom Linux key mappings
+| Disk | Linux | U-Boot |
+|------|-------|--------|
+| eMMC | `/dev/mmcblk2` | `mmc 0` |
+| microSD | `/dev/mmcblk1` | `mmc 1` |
+| NVMe | `/dev/nvme0n1` | `nvme 0` (after `pci enum; nvme scan`) |
+| Wi-Fi (SDIO, not a disk) | `mmc0` | |
 
-#### Touchpad
-- **Type**: Synaptics RMI4 or compatible capacitive touchpad
-- **Protocol**: I2C or PS/2
-- **Bus**: usually I2C on Rockchip I2C pins
-- **Driver**: `rmi_smbus` or `rmi_i2c` kernel modules
+Partition `N` of a disk is `/dev/mmcblk1pN` or `/dev/nvme0n1pN`; ChromiumOS's
+partition numbers and sizes are in [STORAGE.md](STORAGE.md).
 
-### Display
+## Boot order
 
-#### Internal panel
-- **Resolution**: typically 1920x1080 (14-inch model)
-- **Type**: IPS LCD panel
-- **Interface**: eDP (Embedded DisplayPort) or MIPI DSI
-- **Backlight**: PWM-controlled or PMIC-integrated
-- **Panel controller**: usually Parade DisplayPort or Analogix DP
-- **Device tree**: must include panel timings and backlight configuration
+The RK3399 boot ROM looks for a boot loader at sector 64 of the SPI flash,
+then the eMMC, then the microSD card, and runs the first one it finds. It
+cannot start from PCIe, so an NVMe SSD always needs a boot loader on one of
+the others. How this port boots from each disk is in
+[STORAGE_STRATEGY.md](STORAGE_STRATEGY.md).
 
-#### HDMI output
-- **Type**: HDMI 2.0 or 1.4
-- **Controller**: Rockchip HDMI PHY
-- **Hot-plug detect**: supported
+## Audio routing
 
-### Audio
+The ES8316's headphone output feeds both the headphone jack and the speaker
+amplifier, whose enable line is a GPIO; inserting headphones is reported on
+another GPIO, as the input device "rockchip,es8316-codec Headphones". The
+UCM files in the board's BSP tell CRAS which mixer controls switch between
+speaker, headphones and the internal microphone.
 
-#### Codec
-- **Chipset**: Everest Semi ES8316 (I2C address 0x11)
-- **Interface**: I2S1
-- **Features**: headphone jack, internal speaker, microphone support
-- **Driver**: `snd-soc-es8316` with `simple-audio-card` and `snd-soc-rockchip-i2s`
+## Power
 
-#### DAC/amplifier
-- **Internal speaker**: usually powered by integrated amplifier
-- **Headphone output**: 3.5mm jack with detection
+The battery is charged from the DC jack or from USB-C. The device tree lists
+both as the fuel gauge's power supplies; the USB-C port asks a charger for
+5 V and can also supply 5 V at 1.4 A to a device. The Pinebook app's *Питание*
+page shows the power contract a USB-C charger negotiated.
 
-### Wireless
+## References
 
-#### Wi-Fi
-- **Module**: AMPAK AP6256 (Broadcom BCM43456)
-- **Standard**: IEEE 802.11ac, 2.4/5GHz
-- **Interface**: SDIO (`&sdio0`)
-- **Firmware**: `brcm/brcmfmac43456-sdio.bin`, `.clm_blob` and board NVRAM `brcmfmac43456-sdio.pine64,pinebook-pro.txt`
-- **Driver**: `brcmfmac` (`CONFIG_BRCMFMAC`, `CONFIG_BRCMFMAC_SDIO`)
-- **Device naming**: `wlan0`
-
-#### Bluetooth
-- **Chipset**: BCM4345C5, part of the AP6256 module
-- **Standard**: Bluetooth 5.0
-- **Interface**: UART0 with RTS/CTS (`brcm,bcm4345c5` node under `&uart0`)
-- **Firmware**: `brcm/BCM4345C5.hcd`
-- **Driver**: `hci_uart` with `hci_bcm` (`CONFIG_BT_HCIUART_BCM`, `CONFIG_SERIAL_DEV_BUS`)
-- **Device naming**: `hci0`
-
-### Power management
-
-#### PMIC (Power Management IC)
-- **Type**: Rockchip RK808D or similar
-- **Responsibilities**: power rails, charging, sleep states
-- **Interface**: I2C
-- **Driver**: `rk808-regulator` and related subsystem drivers
-
-#### Battery
-- **Capacity**: typically 10,000-12,000 mAh
-- **Chemistry**: Li-Po or similar
-- **Charging**: via USB-C or dedicated charger port
-- **Fuel gauge**: may use dedicated IC for battery status reporting
-
-#### USB ports
-- **Type-C port(s)**: typically 2x USB 3.0 Type-C
-- **Controller**: Rockchip integrated USB 3.0 / 2.0 host
-- **Features**: power delivery, video output (DP Alt Mode on some models)
-
-### Cooling and thermal
-- **Passive cooling**: aluminum chassis acts as heatsink
-- **Thermal sensor**: typically integrated in PMIC or SoC
-- **Throttling**: managed by thermal zones in kernel
-
-## Board revisions
-
-All PineBook Pro units share the same SoC, 4GB LPDDR4, ES8316 codec and AP6256 Wi-Fi/Bluetooth module. They differ in keyboard layout (ISO/ANSI) and in the eMMC module fitted (64GB standard, 128GB optional). One upstream device tree (`rk3399-pinebook-pro.dts`) covers all of them.
-
-**Note**: Check your board's PCB silkscreen or CPU markings to determine exact revision.
-
-## Storage controller mapping
-
-For the ChromiumOS port, use these device paths. The numbering comes from the `mmc0`/`mmc1`/`mmc2` aliases in upstream `rk3399-pinebook-pro.dts` (`mmc0` is the SDIO Wi-Fi bus), so it does not depend on probe order:
-
-```bash
-# eMMC (internal)
-/dev/mmcblk2      # full device
-/dev/mmcblk2p1    # boot partition
-/dev/mmcblk2p2    # kernel partition
-/dev/mmcblk2p3    # rootfs partition
-
-# microSD (removable)
-/dev/mmcblk1      # full device
-/dev/mmcblk1p1    # boot partition
-/dev/mmcblk1p2    # kernel partition
-/dev/mmcblk1p3    # rootfs partition
-
-# NVMe (when using adapter)
-/dev/nvme0n1      # full device
-/dev/nvme0n1p1    # boot partition
-/dev/nvme0n1p2    # kernel partition
-/dev/nvme0n1p3    # rootfs partition
-```
-
-## Bootloader considerations
-
-### U-Boot stages
-1. **SPL (Secondary Program Loader)**: Rockchip `ddr_init` + minimal bootstrap
-2. **TPL (Tertiary Program Loader)**: optional stage (RK3399 may skip)
-3. **U-Boot main**: full bootloader with device enumeration
-
-### Boot flow
-- ROM code loads SPL from first 32KB of selected media
-- SPL initializes DDR and jumps to U-Boot
-- U-Boot loads kernel and device tree
-- Kernel mounts rootfs from configured partition
-
-## Kernel module dependencies
-
-Essential modules for PineBook Pro boot:
-
-```
-- rockchip-pinctrl      # pin control
-- rockchip-pmu          # power management unit
-- rk3399-core           # CPU frequency scaling
-- sdhci-of-arasan       # eMMC controller
-- dw_mmc-rockchip       # microSD and SDIO controllers
-- rk808-regulator       # PMIC regulator
-- brcmfmac              # Wi-Fi (AP6256, SDIO)
-- hci_uart              # Bluetooth (AP6256, UART, hci_bcm)
-- rockchip-isp1         # image signal processor (optional)
-- rockchip-dw-hdmi      # HDMI PHY
-- analogix-dp           # DisplayPort (eDP)
-- pwm-rockchip          # PWM for backlight
-- rmi_smbus / rmi_i2c   # touchpad
-- snd-soc-es8316        # audio codec
-```
-
-## Recommended hardware debugging
-
-Before porting ChromiumOS:
-
-1. Verify bootloader loads on your target media (eMMC first)
-2. Confirm kernel boots with serial console output
-3. Check `dmesg` for all hardware probe messages
-4. Validate storage device enumeration
-5. Test display output and backlight control
-6. Confirm keyboard and touchpad input
-7. Verify Wi-Fi/Bluetooth firmware load
-8. Check battery and charging status
-9. Test suspend/resume cycle
-
-## Summary
-
-PineBook Pro is a well-supported ARM64 board with modern hardware. The main porting challenges are:
-
-- custom keyboard/touchpad mapping
-- Wi-Fi firmware and driver setup
-- audio codec initialization
-- proper device tree for display timings
-- thermal and power management tuning
-
-A solid Linux baseline should validate most of these before ChromiumOS integration.
+- [Pine64 wiki: Pinebook Pro](https://wiki.pine64.org/wiki/Pinebook_Pro):
+  schematics, the mainboard switches, the serial console.
+- [rk3399-pinebook-pro.dts in Linux 6.6](https://github.com/torvalds/linux/blob/v6.6/arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts).

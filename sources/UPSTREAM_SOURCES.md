@@ -1,38 +1,44 @@
-# Upstream sources and references
+# Upstream sources
 
-This file keeps the list of upstream and board-specific sources that are relevant to the PineBook Pro RK3399 ChromiumOS port.
+What the image is built from, with the versions in use on 2026-10-14, and
+the references that helped.
 
-## Official ChromiumOS sources
+## Used in the build
 
-- ChromiumOS docs: https://chromium.googlesource.com/chromiumos/docs/
-- ChromiumOS manifest: https://chromium.googlesource.com/chromiumos/manifest
-- ChromiumOS build scripts: https://chromium.googlesource.com/chromiumos/platform/crosutils/
-- ChromiumOS kernel sources: https://chromium.googlesource.com/chromiumos/third_party/kernel/
-- ChromiumOS U-Boot: https://chromium.googlesource.com/chromiumos/third_party/u-boot/
-- ChromiumOS ARM trusted firmware: https://chromium.googlesource.com/chromiumos/third_party/arm-trusted-firmware/
+| Component | Version | Source |
+|-----------|---------|--------|
+| ChromiumOS | `stable` manifest branch, Chrome 157 | [chromiumos/manifest](https://chromium.googlesource.com/chromiumos/manifest), synced by `build/linux/sync.sh` |
+| Kernel | ChromeOS kernel 6.6 (6.6.147 in the current image) | [chromiumos/third_party/kernel](https://chromium.googlesource.com/chromiumos/third_party/kernel/), `sys-kernel/chromeos-kernel-6_6` from the checkout |
+| Device tree | `rk3399-pinebook-pro.dts` of that kernel, unchanged | [upstream Linux](https://github.com/torvalds/linux/blob/v6.6/arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts) |
+| U-Boot | v2024.10, `pinebook-pro-rk3399_defconfig` | [u-boot/u-boot](https://github.com/u-boot/u-boot) release tarball |
+| TF-A | v2.10.0, `PLAT=rk3399` | [ARM-software/arm-trusted-firmware](https://github.com/ARM-software/arm-trusted-firmware) release tarball |
+| Wi-Fi and Bluetooth firmware | Armbian firmware commit `2a9e1c1` (2026-09-10) | [armbian/firmware](https://github.com/armbian/firmware), `brcm/` |
+| DisplayPort firmware | `rockchip/dptx.bin` | linux-firmware, through ChromiumOS's `LINUX_FIRMWARE` |
+| Mesa | ChromiumOS's `media-libs/mesa-panfrost` (23.3 in the current image) | the ChromiumOS checkout |
+| Waydroid | 1.6.3 | [waydroid/waydroid](https://github.com/waydroid/waydroid) |
+| LXC | 7.0.0 | [lxc/lxc](https://github.com/lxc/lxc) |
+| libgbinder | 1.1.52 | [mer-hybris/libgbinder](https://github.com/mer-hybris/libgbinder) |
+| libglibutil | 1.0.82 | [sailfishos/libglibutil](https://github.com/sailfishos/libglibutil) |
+| gbinder-python | 1.3.1 | [waydroid/gbinder-python](https://github.com/waydroid/gbinder-python) |
+| Android images | LineageOS 20 (Android 13), downloaded by Waydroid on the laptop | Waydroid's update server, `ota.waydro.id` |
 
-## PineBook Pro and RK3399 sources
+The release tarballs are listed with their hashes in the `Manifest` of each
+package in the overlay.
 
-- Pine64 Wiki: https://wiki.pine64.org/wiki/PineBook_Pro
-- Pine64 Linux kernel: https://github.com/pine64/linux
-- Pine64 U-Boot: https://github.com/pine64/u-boot
-- Armbian PineBook Pro: https://www.armbian.com/pinebook-pro/
-- Armbian build system: https://github.com/armbian/build
-- Rockchip Linux repositories: https://github.com/rockchip-linux
-- Rockchip RK3399 firmware: https://github.com/rockchip-linux/rkbin
-- Rockchip Linux SDK: https://github.com/rockchip-linux/rockchip-linux-sdk
-- Linux kernel mainline: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/
+## References
 
-## Driver and hardware support references
-
-- Rockchip DRM / display: https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/rockchip
-- Mali GPU support: https://github.com/rockchip-linux/gpu-mali-midgard
-- Rockchip audio stack: https://github.com/rockchip-linux/linux/tree/release/sound/soc/rockchip
-- PineBook Pro device tree (upstream Linux): https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts
-- Broadcom brcmfmac Wi-Fi driver (AP6256 / BCM43456): https://github.com/torvalds/linux/tree/master/drivers/net/wireless/broadcom/brcm80211/brcmfmac
-- Broadcom UART Bluetooth driver (hci_bcm, BCM4345C5): https://github.com/torvalds/linux/blob/master/drivers/bluetooth/hci_bcm.c
-- Broadcom firmware (linux-firmware): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/brcm
-
-## General notes
-
-Use these sources as references, not as a direct upstream replacement. A ChromiumOS port still needs the proper ChromeOS build environment, board definitions, and hardware-specific policy decisions.
+- [ChromiumOS developer guide](https://www.chromium.org/chromium-os/developer-library/guides/development/developer-guide/):
+  the SDK, `setup_board`, `build_packages`, `build_image`
+- [ChromiumOS disk format](https://www.chromium.org/chromium-os/chromiumos-design-docs/disk-format/):
+  partitions and the stateful partition
+- [Chromium API keys](https://www.chromium.org/developers/how-tos/api-keys/):
+  Google sign-in for Chromium builds
+- [Pine64 wiki: Pinebook Pro](https://wiki.pine64.org/wiki/Pinebook_Pro):
+  hardware, schematics, the serial console
+- [Linux media: rkvdec](https://github.com/torvalds/linux/tree/v6.6/drivers/staging/media/rkvdec)
+  and [Hantro](https://github.com/torvalds/linux/tree/v6.6/drivers/media/platform/verisilicon):
+  which codecs the RK3399's video blocks support in 6.6
+- [Mesa Panfrost](https://docs.mesa3d.org/drivers/panfrost.html)
+- [Waydroid documentation](https://docs.waydro.id/)
+- A working mainline kernel config for another RK3399 board, the Khadas
+  Edge-V, was the reference for the SoC options in the kernel fragment.

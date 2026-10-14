@@ -65,4 +65,4 @@ done < <(lsblk -lno NAME,MOUNTPOINT "${dev}" | tail -n +2)
 run sudo dd if="${img}" of="${dev}" bs=4M conv=fsync oflag=direct status=progress
 run sync
 ok "Wrote ${img} to ${dev}"
-warn "The Pinebook Pro also needs U-Boot (in SPI flash or on the card) to boot this image; see docs/WINDOWS_BUILD.md."
+info "U-Boot and boot.scr are in the image (build.sh export puts them there); a raw build_image output would not boot. Next: docs/USER_GUIDE.md."

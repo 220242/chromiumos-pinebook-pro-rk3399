@@ -2,6 +2,10 @@
 /*
  * PineBook Pro (RK3399): microSD boot target (primary development target).
  *
+ * Not used by the build: the image uses the upstream device tree unchanged
+ * (see the board overlay). Kept for reference; scripts/check-dts.sh still
+ * checks that it applies.
+ *
  * Device tree overlay applied on top of upstream Linux
  * arch/arm64/boot/dts/rockchip/rk3399-pinebook-pro.dts (compiled with -@).
  *
