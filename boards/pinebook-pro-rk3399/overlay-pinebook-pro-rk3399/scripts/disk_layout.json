@@ -21,7 +21,6 @@
       },
       {
         "num": 3,
-        "size": "3 GiB",
         "fs_format": "ext4",
         "fs_options": {
           "ext4": "-i 65536 -O ^has_journal"
@@ -30,11 +29,21 @@
     ],
     "usb": [
       {
+        "num": 3,
+        "size": "3 GiB",
+        "fs_size": "3000 MiB"
+      },
+      {
         "num": 1,
         "size": "5 GiB"
       }
     ],
     "usb-updatable": [
+      {
+        "num": 3,
+        "size": "3 GiB",
+        "fs_size": "3000 MiB"
+      },
       {
         "num": 1,
         "size": "5 GiB"
