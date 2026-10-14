@@ -1,3 +1,7 @@
+# Waydroid's network script runs dnsmasq as the DHCP server of the Android
+# container's bridge.
+net-dns/dnsmasq dhcp
+
 # Chrome built from source (no prebuilt has these):
 #  - chrome_media: proprietary codecs and containers (H.264, AAC, MP3, MP4,
 #    HEVC parser...) with ffmpeg_branding=ChromeOS. The prebuilt Chromium has

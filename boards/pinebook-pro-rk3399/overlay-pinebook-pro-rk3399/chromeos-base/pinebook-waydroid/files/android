@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+# Copyright 2026 The chromiumos-pinebook-pro-rk3399 Authors
+# Distributed under the terms of the GNU General Public License v2
+
+"""Android apps (Waydroid) on the Pinebook Pro, from a shell.
+
+The same as the page http://android.localhost: both talk to the
+pinebook-android service, which runs while someone is logged in.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+URL = "http://127.0.0.1"
+HEADERS = {"X-Android-Launcher": "1"}
+
+STEPS = {
+    "partition": "Adding the ANDROID-DATA partition",
+    "format": "Formatting ANDROID-DATA",
+    "download": "Looking up the Android images",
+    "download_system": "Downloading Android (system)",
+    "download_vendor": "Downloading Android (vendor)",
+    "verify_system": "Checking the system image",
+    "verify_vendor": "Checking the vendor image",
+    "extract_system": "Unpacking the system image",
+    "extract_vendor": "Unpacking the vendor image",
+    "configure": "Configuring",
+    "container": "Starting the container",
+    "boot": "Starting Android (the first start takes a few minutes)",
+    "show": "Opening Android's window",
+    "stop": "Stopping Android",
+    "install": "Installing",
+}
+
+ERRORS = {
+    "no_disk": "Could not tell which disk the system runs from.",
+    "no_space": "Not enough free space on the system disk after ChromiumOS (4 GB or more is needed).",
+    "gpt": "Could not add the ANDROID-DATA partition.",
+    "fsck": "The ANDROID-DATA file system has errors e2fsck could not fix.",
+    "unsupported": "This image lacks what Android needs.",
+    "no_wayland": "Chrome's Wayland server (/run/chrome/wayland-0) is missing.",
+    "no_network": "Could not download Android; check the network and try again.",
+    "init_failed": "Could not download or unpack Android.",
+    "container_failed": "Android's container service did not start.",
+    "bus_failed": "The D-Bus session bus for Android did not start.",
+    "session_failed": "Android did not start.",
+    "boot_timeout": "Android did not finish starting in 15 minutes.",
+    "install_failed": "The app was not installed.",
+    "not_apk": "That is not an APK file.",
+    "not_set_up": "Android is not set up yet; run `android` first.",
+    "busy": "Android is still busy with the previous command.",
+    "not_running": "Android is not running; run `android` first.",
+    "no_android_id": "No device ID yet: Google Play has not started once.",
+    "upload": "The file did not arrive in full.",
+    "command_failed": "A command failed.",
+    "internal": "Internal error in the service.",
+}
+
+
+class ServiceError(Exception):
+    pass
+
+
+def request(path, data=None, headers=None):
+    req = urllib.request.Request(URL + path, data=data,
+                                 headers={**HEADERS, **(headers or {})},
+                                 method="GET" if data is None else "POST")
+    # Never through a proxy: the service is on this machine.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=120) as r:
+            body = r.read()
+            if r.headers.get_content_type() == "application/json":
+                return json.loads(body)
+            return body.decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        try:
+            err = json.loads(body)["error"]
+        except (ValueError, KeyError, TypeError):
+            raise ServiceError(f"{e.code} {body.decode('utf-8', 'replace').strip()}") from None
+        raise ServiceError(describe(err)) from None
+    except urllib.error.URLError as e:
+        raise ServiceError(
+            f"The pinebook-android service does not answer ({e.reason}). It runs "
+            "while someone is logged in; its log is /var/log/pinebook-android.log."
+        ) from None
+
+
+def post(path, obj=None):
+    return request(path, json.dumps(obj or {}).encode(),
+                   {"Content-Type": "application/json"})
+
+
+def describe(err):
+    text = ERRORS.get(err.get("code"), err.get("code", "error"))
+    detail = (err.get("detail") or "").strip()
+    return f"{text}\n{detail}" if detail else text
+
+
+def human(n):
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+def wait(status, quiet=False, check=True):
+    """Shows the progress of the service's current operation until it ends;
+    raises its error if it failed."""
+    tty = sys.stdout.isatty()
+    shown = None  # the line on the terminal
+    shown_step = None
+    while status.get("busy"):
+        step = status.get("step")
+        line = STEPS.get(step, step or "Working")
+        progress = status.get("progress")
+        if progress and progress[1]:
+            line += f": {human(progress[0])} of {human(progress[1])}"
+        if not quiet:
+            if tty and line != shown:
+                print("\r\033[K" + line, end="", flush=True)
+                shown = line
+            elif not tty and step != shown_step:
+                print(line, flush=True)
+            shown_step = step
+        time.sleep(1)
+        status = request("/api/status")
+    if shown:
+        print()
+    if check and status.get("error"):
+        raise ServiceError(describe(status["error"]))
+    notice = status.get("notice")
+    if notice and notice.get("code") == "installed":
+        print(f"Installed: {notice.get('detail')}")
+    elif notice and notice.get("code") == "install_sent":
+        print(f"Sent {notice.get('detail')} to Android; it is not in the app list yet "
+              "(see `android log`).")
+    return status
+
+
+def confirm_setup(status, yes):
+    setup = status.get("setup") or {}
+    missing = [k for k, ok in (status.get("checks") or {}).items()
+               if not ok and k != "wayland"]
+    if missing:
+        raise ServiceError(f"{ERRORS['unsupported']} Missing: {', '.join(missing)}")
+    if setup.get("error"):
+        raise ServiceError(describe(setup["error"]))
+    if setup.get("has_partition") or setup.get("has_data"):
+        print("Android will use the ANDROID-DATA partition already on the system disk, "
+              "with the apps and data from before.")
+    else:
+        free = setup.get("free_bytes", 0)
+        if free < setup.get("min_free", 4 << 30):
+            raise ServiceError(f"{ERRORS['no_space']} Free: {human(free)}.")
+        print(f"Setting up Android adds an ANDROID-DATA partition in the free {human(free)} "
+              f"at the end of /dev/{setup.get('disk')} (ChromiumOS's partitions stay as "
+              "they are), then downloads Android (about 1 GB).")
+    if yes or not sys.stdin.isatty():
+        return
+    if input("Continue? [Y/n] ").strip().lower() not in ("", "y", "yes", "д", "да"):
+        sys.exit(1)
+
+
+def cmd_open(args):
+    # Let an operation already running finish; a failed earlier one is retried.
+    status = wait(request("/api/status"), quiet=True, check=False)
+    if status["state"] == "needs_setup":
+        confirm_setup(status, args.yes)
+        status = wait(post("/api/setup", {"start": True, "google_play": args.play}))
+    elif args.play and not status.get("google_play"):
+        print("Adding Google Play: Android's system image is downloaded again; "
+              "apps and data stay.")
+        status = wait(post("/api/setup", {"start": True, "google_play": True}))
+    else:
+        status = wait(post("/api/start"))
+    print("Android is running.")
+    if args.play:
+        print("Google Play needs this device registered once: run `android play-id`.")
+
+
+def cmd_play_id(args):
+    android_id = post("/api/android-id")["android_id"]
+    print(f"Device ID: {android_id}\n"
+          "Register it at https://www.google.com/android/uncertified (signed in with\n"
+          "the Google account you use in Play), then restart Android:\n"
+          "`android stop`, then `android`. It can take a while to take effect.")
+
+
+def cmd_stop(args):
+    wait(post("/api/stop"))
+    print("Android is stopped.")
+
+
+def cmd_status(args):
+    status = request("/api/status")
+    if args.json:
+        print(json.dumps(status, indent=2))
+        return
+    print(f"State: {status['state']}")
+    if status.get("busy"):
+        print(f"Doing: {STEPS.get(status.get('step'), status.get('step'))}")
+    for name, ok in (status.get("checks") or {}).items():
+        print(f"Check {name}: {'ok' if ok else 'MISSING'}")
+    if status.get("error"):
+        print("Last error: " + describe(status["error"]))
+
+
+def cmd_apps(args):
+    status = request("/api/status")
+    apps = status.get("apps")
+    if apps is None:
+        raise ServiceError("Android is not set up yet; run `android` first.")
+    for app in apps:
+        if args.all or not app["system"]:
+            print(f"{app['package']:<45} {app['name']}")
+
+
+def cmd_launch(args):
+    status = post("/api/launch", {"package": args.package})
+    # Busy when Android has to start first; otherwise the app is open, and
+    # the status still describes the operation before.
+    if status.get("busy"):
+        wait(status)
+
+
+def cmd_install(args):
+    name = os.path.basename(args.file)
+    with open(args.file, "rb") as f:
+        data = f.read()
+    print(f"Sending {name} ({human(len(data))})")
+    status = request("/api/install", data, {
+        "Content-Type": "application/vnd.android.package-archive",
+        "X-File-Name": urllib.parse.quote(name),
+    })
+    wait(status)
+
+
+def cmd_log(args):
+    print(request("/api/log"), end="")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="android", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="With no command: set Android up on first use, start it and show it.")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="do not ask before setting Android up")
+    parser.add_argument("--play", action="store_true",
+                        help="with Google Play (Waydroid's GAPPS image); also adds it "
+                        "to an Android set up without it")
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("open", help="the default: set up if needed, start, show")
+    sub.add_parser("stop", help="stop Android")
+    p = sub.add_parser("status", help="what Android is doing")
+    p.add_argument("--json", action="store_true", help="the service's raw status")
+    p = sub.add_parser("apps", help="list the installed apps")
+    p.add_argument("-a", "--all", action="store_true", help="include system apps")
+    p = sub.add_parser("launch", help="open an app")
+    p.add_argument("package", help="the app's package name (see `android apps`)")
+    p = sub.add_parser("install", help="install an APK file")
+    p.add_argument("file", help="the .apk file")
+    sub.add_parser("log", help="the service's recent log")
+    sub.add_parser("play-id", help="the device ID to register for Google Play")
+    args = parser.parse_args()
+    handler = {
+        None: cmd_open, "open": cmd_open, "stop": cmd_stop, "status": cmd_status,
+        "apps": cmd_apps, "launch": cmd_launch, "install": cmd_install, "log": cmd_log,
+        "play-id": cmd_play_id,
+    }[args.cmd]
+    try:
+        handler(args)
+    except ServiceError as e:
+        print(f"android: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)
+    except OSError as e:
+        print(f"android: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
