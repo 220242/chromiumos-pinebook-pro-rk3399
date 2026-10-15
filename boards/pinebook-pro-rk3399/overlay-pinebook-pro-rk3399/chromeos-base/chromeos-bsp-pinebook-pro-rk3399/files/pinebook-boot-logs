@@ -8,8 +8,9 @@
 #  - every FAT-formatted USB drive plugged in (any /dev/sd* partition), so
 #    logs survive even when the boot disk itself stops responding.
 # Each volume is written by its own loop, and each loop syncs only its own
-# file system, so a stuck disk cannot stop the other copies. Every second for
-# the first five minutes, then every 30 seconds. Keeps the last 10 boots.
+# file system, so a stuck disk cannot stop the other copies. Every 5 seconds for
+# the first two minutes, then every minute (less SD wear and CPU now that
+# the system boots). Keeps the last 10 boots.
 
 collect() { # collect DIR: snapshot the logs into DIR
 	local out=$1 f name
@@ -45,7 +46,7 @@ log_to() { # log_to MOUNTPOINT: keep writing this boot's logs there
 		collect "${out}"
 		sync -f "${out}/dmesg.txt"
 		# sleep in the background and wait, so a TERM is handled at once.
-		if (( $(date +%s) - start < 300 )); then sleep 1 & else sleep 30 & fi
+		if (( $(date +%s) - start < 120 )); then sleep 5 & else sleep 60 & fi
 		wait $!
 	done
 }
