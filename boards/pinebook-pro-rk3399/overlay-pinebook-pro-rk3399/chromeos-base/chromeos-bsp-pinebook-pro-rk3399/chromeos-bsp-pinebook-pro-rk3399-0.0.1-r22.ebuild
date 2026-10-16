@@ -64,4 +64,8 @@ src_install() {
 
 	# /dev/video-dec0 etc., where Chrome looks for the hardware codecs.
 	udev_dorules "${FILESDIR}/50-media.rules"
+
+	# The codec drivers before Chrome looks for them (hardware video decoding).
+	insinto /etc/init
+	doins "${FILESDIR}/pinebook-codecs.conf"
 }
