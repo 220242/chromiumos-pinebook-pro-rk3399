@@ -68,14 +68,15 @@ fi
 
 # Bring-up: a task stuck for 30 s is reported (with its stack) instead of
 # panicking and rebooting after 120 s, so pinebook-boot-logs can save it.
-# printk.devkmsg=on: keep every message programs write to the kernel log;
-# by default most of chromeos_startup's were dropped by the rate limit.
+# loglevel=4: only warnings and errors on the console (the bring-up used 7
+# and printk.devkmsg=on, which cost time at every boot; the logs still hold
+# everything at the default levels).
 # brcmfmac.feature_disable=0x82000: no firmware supplicant (FWSUP, 0x2000)
 # and no SAE in firmware (0x80000). With them the AP6256 firmware takes over
 # the WPA handshake and ChromeOS's wpa_supplicant fails to connect
 # ("disconnect-failure"); the same setting is the usual fix on other
 # BCM4345 boards.
-setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=7 hung_task_panic=0 hung_task_timeout_secs=30 printk.devkmsg=on brcmfmac.feature_disable=0x82000"
+setenv bootargs "console=ttyS2,1500000 console=tty1 root=PARTUUID=${cros_root_uuid} rootwait ro noinitrd cros_legacy cros_debug loglevel=4 hung_task_panic=0 hung_task_timeout_secs=30 brcmfmac.feature_disable=0x82000"
 
 # The Pinebook app asked to move the system to another disk: the upstart job
 # pinebook-migrate does it at this boot, before the stateful partition is

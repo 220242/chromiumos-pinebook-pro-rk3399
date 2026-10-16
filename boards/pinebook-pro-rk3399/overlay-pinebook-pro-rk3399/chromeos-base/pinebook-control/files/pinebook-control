@@ -109,7 +109,34 @@ DEFAULTS = {
     # Power controls; None (or a missing key) leaves the system's own choice.
     "power": {"leds": {}, "wifi_power_save": None, "cpus_online": {},
               "mem_sleep": None},
+    # Chrome switches (applied at the next login, see pinebook-chrome-keys).
+    "chrome": {"gpu_raster": False, "zero_copy": False, "video_logging": False},
+    # Temperature → maximum frequency: at or above each temperature (°C) the
+    # cluster is held to that MHz. Off by default; the kernel's own trips
+    # (70/75 °C passive, 95 °C critical) always stay in force.
+    "thermal": {
+        "enabled": False,
+        "little": [[70, 1200], [80, 1008], [88, 816]],
+        "big": [[65, 1608], [72, 1416], [80, 1200], [88, 816]],
+        "gpu": [[70, 600], [80, 400], [88, 297]],
+        "charging_big_mhz": None,   # cap for the A72 while charging
+    },
 }
+
+THERMAL_PRESETS = {
+    "quiet": {"little": [[55, 1200], [65, 1008], [75, 816]],
+              "big": [[50, 1416], [60, 1200], [70, 1008], [80, 600]],
+              "gpu": [[55, 500], [65, 400], [75, 297]]},
+    "standard": {"little": [[70, 1200], [80, 1008], [88, 816]],
+                 "big": [[65, 1608], [72, 1416], [80, 1200], [88, 816]],
+                 "gpu": [[70, 600], [80, 400], [88, 297]]},
+    "performance": {"little": [[85, 1200], [90, 1008]],
+                    "big": [[80, 1608], [85, 1416], [90, 1008]],
+                    "gpu": [[85, 600], [90, 400]]},
+}
+CHROME_FLAGS_FILE = STATE_DIR + "/chrome-flags.conf"
+VIDEO_VMODULE = ("--vmodule=*/media/gpu/*=2,*/media/gpu/v4l2/*=3,"
+                 "*/media/gpu/chromeos/*=2,*/media/mojo/services/*=1,*/media/filters/*=1")
 
 
 def read(path, default=None):
@@ -454,6 +481,10 @@ def load_settings():
     for k in s["power"]:
         if k in saved.get("power", {}):
             s["power"][k] = saved["power"][k]
+    for group in ("chrome", "thermal"):
+        for k in s[group]:
+            if k in saved.get(group, {}):
+                s[group][k] = saved[group][k]
     return s
 
 
@@ -499,7 +530,43 @@ def validate(body):
     if "mem_sleep" in p and (p["mem_sleep"] is None or
                              (ms and p["mem_sleep"] in ms["options"])):
         s["power"]["mem_sleep"] = p["mem_sleep"]
+    c = body.get("chrome") or {}
+    for k in s["chrome"]:
+        if isinstance(c.get(k), bool):
+            s["chrome"][k] = c[k]
+    t = body.get("thermal") or {}
+    if t.get("preset") in THERMAL_PRESETS:
+        s["thermal"].update(json.loads(json.dumps(THERMAL_PRESETS[t["preset"]])))
+    if isinstance(t.get("enabled"), bool):
+        s["thermal"]["enabled"] = t["enabled"]
+    for k in ("little", "big", "gpu"):
+        if k in t:
+            pts = sorted([int(a), int(b)] for a, b in t[k])
+            if len(pts) > 8 or any(not 30 <= a <= 100 or not 100 <= b <= 2200
+                                   for a, b in pts):
+                raise ValueError("bad %s curve" % k)
+            s["thermal"][k] = pts
+    if "charging_big_mhz" in t:
+        v = t["charging_big_mhz"]
+        s["thermal"]["charging_big_mhz"] = int(v) if v not in (None, "", 0) else None
     return s
+
+
+def write_chrome_flags(settings):
+    c = settings["chrome"]
+    lines = []
+    if c.get("gpu_raster"):
+        lines.append("--enable-gpu-rasterization")
+    if c.get("zero_copy"):
+        lines.append("--enable-zero-copy")
+    if c.get("video_logging"):
+        lines.append(VIDEO_VMODULE)
+    os.makedirs(STATE_DIR, exist_ok=True)
+    if lines:
+        with open(CHROME_FLAGS_FILE, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    elif os.path.exists(CHROME_FLAGS_FILE):
+        os.remove(CHROME_FLAGS_FILE)
 
 
 # --- Monitoring -------------------------------------------------------------
@@ -517,14 +584,21 @@ class Monitor:
         self.battery_hist = []
         self.history = []
         self.ticks = 0
+        self.levels = {}            # thermal curve step per cluster
+        self.thermal_caps = {}      # MHz caps in force now
+        self.cap_hist = []          # (time, capacity, on charger)
+        self.charge_stall = None    # description of a charge that stopped
 
     def run(self):
         while True:
             try:
                 self.sample()
                 self.ticks += 1
+                if self.ticks % 2 == 0:
+                    self.thermal_step()
                 if self.ticks % self.HISTORY_STEP == 0:
                     self.record()
+                    self.check_charging()
                 # shill may change Wi-Fi power saving behind our back, and
                 # wlan0 appears after this service starts.
                 if self.ticks % 60 == 5:
@@ -532,6 +606,74 @@ class Monitor:
             except Exception:  # Keep sampling whatever a file read does.
                 log.exception("sample")
             time.sleep(1)
+
+    def curve_cap(self, key, points, temp):
+        """MHz cap from a temperature curve, with 3 °C of hysteresis on the
+        way down so the frequency does not flap around a step."""
+        if temp is None or not points:
+            self.levels[key] = -1
+            return None
+        level = -1
+        for i, (t, _) in enumerate(points):
+            if temp >= t:
+                level = i
+        prev = self.levels.get(key, -1)
+        if 0 <= prev < len(points) and level < prev and temp > points[prev][0] - 3:
+            level = prev
+        self.levels[key] = level
+        return points[level][1] if level >= 0 else None
+
+    def thermal_step(self):
+        s = load_settings()
+        th = s["thermal"]
+        temps = temperatures()
+        caps = {}
+        if th.get("enabled"):
+            cpu_t, gpu_t = temps.get("cpu-thermal"), temps.get("gpu-thermal")
+            for key, t in (("little", cpu_t), ("big", cpu_t), ("gpu", gpu_t)):
+                cap = self.curve_cap(key, th.get(key) or [], t)
+                if cap:
+                    caps[key] = cap
+        bat = battery()
+        if th.get("charging_big_mhz") and (bat.get("ac") or bat.get("usb_c")):
+            caps["big"] = min(c for c in (caps.get("big"), th["charging_big_mhz"]) if c)
+        self.thermal_caps = caps
+        lim = profile_limits(s)
+        for p in policies():
+            freqs = avail_freqs(p["path"])
+            want = lim.get("%s_max" % p["id"])
+            if caps.get(p["id"]) and freqs:
+                want = clamp_to(freqs, min(want or freqs[-1], caps[p["id"]] * 1000))
+            if want and read_int(p["path"] + "/scaling_max_freq") != want:
+                write(p["path"] + "/scaling_max_freq", want)
+        if os.path.isdir(GPU_DEVFREQ):
+            freqs = gpu_freqs()
+            want = lim.get("gpu_max")
+            if caps.get("gpu") and freqs:
+                want = clamp_to(freqs, min(want or freqs[-1], caps["gpu"] * 1000000))
+            if want and read_int(GPU_DEVFREQ + "/max_freq") != want:
+                write(GPU_DEVFREQ + "/max_freq", want)
+
+    def check_charging(self):
+        """The CW2015 says "Charging" whenever a charger is plugged in, even
+        when the charger chip has stopped (its LED then blinks: overheating
+        or a fault). So watch the charge: falling for 10 minutes with the
+        charger in means it is not charging."""
+        bat = battery()
+        now = time.time()
+        on = bool(bat.get("ac") or bat.get("usb_c"))
+        if bat.get("capacity") is None:
+            return
+        self.cap_hist.append((now, bat["capacity"], on))
+        self.cap_hist = [h for h in self.cap_hist if h[0] > now - 1800]
+        window = [h for h in self.cap_hist if h[0] > now - 600]
+        if on and len(window) > 30 and all(h[2] for h in window) and \
+                window[-1][1] < 98 and window[-1][1] < max(h[1] for h in window):
+            if not self.charge_stall:
+                self.charge_stall = {"since": int(now), "capacity": bat["capacity"]}
+                log.warning("Charge falling with the charger in: %s", bat)
+        elif not on or (window and window[-1][1] > window[0][1]):
+            self.charge_stall = None
 
     def record(self):
         bat = battery()
@@ -1042,12 +1184,14 @@ def status():
                "governor": read(GPU_DEVFREQ + "/governor")}
     bat = battery()
     bat["est_watts"] = estimate_watts(bat) if bat.get("status") == "Discharging" else None
+    bat["charge_stall"] = MONITOR.charge_stall
     return {
         "time": time.time(),
         "cpu": cpu,
         "cpu_load": load.get("all"),
         "gpu": gpu,
         "temps": temperatures(),
+        "thermal_caps": MONITOR.thermal_caps,
         "battery": bat,
         "memory": memory(),
         "accel": device_users(),
@@ -1071,6 +1215,7 @@ def settings_info():
         "overclock_levels": {k: {t: [hz // 1000000 for hz, _ in v[t]] for t in v}
                              for k, v in OVERCLOCK.items()},
         "undervolt_steps": UNDERVOLT_STEPS,
+        "thermal_presets": THERMAL_PRESETS,
         "tune_file": read_tune_file(),
         "boot_logs": boot_logs_enabled(),
         "google_keys": google_keys_info(),
@@ -1162,6 +1307,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # A CPU that comes back online starts with the default limits.
             applied = apply_limits(new)
         result = {"applied": applied, "reboot_needed": False}
+        if "chrome" in body:
+            try:
+                write_chrome_flags(new)
+                result["relogin_needed"] = True
+            except OSError as e:
+                result["error"] = str(e)
         if "google_keys" in body:
             try:
                 set_google_keys(body["google_keys"])

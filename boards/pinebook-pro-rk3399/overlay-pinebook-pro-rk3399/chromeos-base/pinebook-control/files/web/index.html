@@ -65,6 +65,10 @@
     <div class="card">
       <h2>Зарядка</h2>
       <div id="charger"></div>
+      <p class="hint">Схема питания Pinebook Pro рассчитана только на 5 В
+        (как и круглый разъём), поэтому по USB-C ноутбук запрашивает 5 В / 2,5 А,
+        даже если зарядка предлагает 9–20 В. Более высокое напряжение может
+        повредить плату.</p>
     </div>
     <div class="card">
       <h2>Управление</h2>
@@ -102,6 +106,45 @@
       <label>Регулятор GPU <select id="gpu_governor"></select></label>
     </div>
     <p id="applied" class="hint"></p>
+  </div>
+
+  <div class="card">
+    <h2>Частоты в зависимости от температуры</h2>
+    <p class="hint">Когда температура процессора (для GPU — видеоядра) достигает
+      порога, частота ограничивается указанной; при остывании на 3 °C ниже
+      порога ограничение снимается. Встроенная защита ядра (70/75 °C и аварийные
+      95 °C) действует всегда.</p>
+    <label class="row"><span>Включить свою кривую</span><input type="checkbox" id="th-enabled"></label>
+    <div class="segmented" id="th-presets">
+      <button data-preset="quiet">Тихий и прохладный</button>
+      <button data-preset="standard">Стандартный</button>
+      <button data-preset="performance">Производительный</button>
+    </div>
+    <div class="grid" id="th-curves"></div>
+    <label>Ограничить A72 во время зарядки
+      <select id="th-charging"></select></label>
+    <p class="hint">Помогает, если зарядный контроллер перегревается и зарядка
+      останавливается (мигает светодиод у разъёма): меньше нагрузка — меньше
+      ток и нагрев.</p>
+    <button id="th-save" class="primary">Сохранить</button>
+    <p id="th-state" class="hint"></p>
+  </div>
+
+  <div class="card warn">
+    <h2>Chrome</h2>
+    <p class="hint">Применяется после выхода из сеанса. Если после включения
+      экран станет чёрным или Chrome начнёт падать: Ctrl+Alt+F2, вход chronos
+      (пароль test0000), затем
+      <code>sudo rm /var/lib/pinebook-control/chrome-flags.conf; sudo restart ui</code>.</p>
+    <div class="form">
+      <label><span>Аппаратная растеризация (GPU rasterization)<br><small class="hint">Chrome
+        отключает её для Mali в Panfrost; включение снимает нагрузку с CPU при
+        прокрутке, но возможны артефакты</small></span><input type="checkbox" id="cr-raster"></label>
+      <label><span>Zero-copy (меньше копирований текстур)</span><input type="checkbox" id="cr-zero-copy"></label>
+      <label><span>Подробный журнал видеодекодера<br><small class="hint">только для
+        диагностики, слегка нагружает систему</small></span><input type="checkbox" id="cr-video-log"></label>
+    </div>
+    <button id="cr-save" class="primary">Сохранить</button>
   </div>
 
   <div class="card">

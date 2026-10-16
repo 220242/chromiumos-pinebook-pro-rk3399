@@ -56,9 +56,10 @@ function tempClass(t) {
 
 function renderStatus(s) {
   $("cpu-load").textContent = s.cpu_load != null ? Math.round(s.cpu_load) + "%" : "";
+  const caps = s.thermal_caps || {};
   $("cpu").innerHTML = s.cpu.map((c) => `
     <div class="row"><b>${c.name}</b><span>${mhz(c.cur_khz)}
-      <small>из ${mhz(c.max_khz)} · ${esc(c.governor)}</small></span></div>
+      <small>из ${mhz(c.max_khz)} · ${esc(c.governor)}${caps[c.id] ? ` · <span class="warm">по температуре ≤ ${caps[c.id]} МГц</span>` : ""}</small></span></div>
     ${bar(c.cur_khz, c.hw_max_khz)}
     <div class="cores">${c.load.map((l, i) =>
       `<span title="cpu${c.cpus[i]}">${l == null ? "—" : Math.round(l) + "%"}</span>`).join("")}</div>
@@ -87,6 +88,10 @@ function renderStatus(s) {
     ${b.time_to_empty_min ? `<div class="row"><b>Осталось</b><span>${Math.floor(b.time_to_empty_min / 60)} ч ${b.time_to_empty_min % 60} мин</span></div>` : ""}
     <div class="row"><b>Зарядка</b><span>${b.ac ? "блок питания" : ""}${b.usb_c ? (b.ac ? ", " : "") +
       `USB-C ${b.usb_c.volts} В / ${b.usb_c.max_amps} А` : ""}${!b.ac && !b.usb_c ? "нет" : ""}</span></div>
+    ${b.charge_stall ? `<p class="hint hot">Зарядка не идёт: заряд падает при подключённой зарядке
+      (с ${new Date(b.charge_stall.since * 1000).toLocaleTimeString()}). Обычно это перегрев зарядного
+      контроллера, тогда мигает светодиод у разъёма: снизь нагрузку или включи ограничение A72
+      при зарядке в «Настройках».</p>` : ""}
     <p class="hint">Датчик батареи не измеряет ток, мощность оценивается по разряду.</p>`;
 
   const a = s.accel;
@@ -124,7 +129,8 @@ function overlayHtml(s) {
     <div>GPU ${ghzHz(s.gpu.cur_hz)} · CPU ${Math.round(s.cpu_load || 0)}%</div>
     <div>${t}</div>
     <div>${b.capacity ?? "—"}%${b.est_watts != null ? " · ≈" + b.est_watts.toFixed(1) + " Вт" : ""}
-      · ${s.accel.gpu_users.length ? "GPU✓" : "GPU–"} · ${dec ? "HW-видео✓" : "HW-видео–"}</div>`;
+      · ${s.accel.gpu_users.length ? "GPU✓" : "GPU–"} · ${dec ? "HW-видео✓" : "HW-видео–"}</div>
+    ${b.charge_stall ? `<div class="hot">Зарядка остановилась</div>` : ""}`;
 }
 
 function renderOverlay(s) {
@@ -173,6 +179,12 @@ function renderSettings() {
   $("applied").textContent = `Сейчас: A53 до ${mhz(a.little_max)}, A72 до ${mhz(a.big_max)}, ` +
     `${a.cpu_governor}; GPU до ${ghzHz(a.gpu_max)}, ${a.gpu_governor}.`;
 
+  renderThermal(s.thermal);
+  const ch = s.chrome || {};
+  $("cr-raster").checked = !!ch.gpu_raster;
+  $("cr-zero-copy").checked = !!ch.zero_copy;
+  $("cr-video-log").checked = !!ch.video_logging;
+
   const k = info.google_keys || {};
   $("keys-state").textContent =
     (k.active ? "Chrome сейчас запущен с ключами. " : "Chrome сейчас без ключей. ") +
@@ -201,6 +213,51 @@ function renderSettings() {
         const r = info.running_tables[k][i], n = info.tune_tables[k][i];
         return `<tr><td>${r ? `${r[0]} МГц, ${r[1]} мВ` : ""}</td><td>${n ? `${n[0]} МГц, ${n[1]} мВ` : ""}</td></tr>`;
       }).join("")}</table>`).join("");
+}
+
+// --- Temperature curve ---------------------------------------------------------
+
+const CURVE_NAMES = { little: "Cortex-A53", big: "Cortex-A72", gpu: "GPU" };
+
+function renderThermal(th) {
+  $("th-enabled").checked = !!th.enabled;
+  const freqsMHz = {
+    little: info.little_freqs.map((f) => f / 1000),
+    big: info.big_freqs.map((f) => f / 1000),
+    gpu: info.gpu_freqs.map((f) => Math.round(f / 1e6)),
+  };
+  $("th-curves").innerHTML = Object.keys(CURVE_NAMES).map((k) => `
+    <div><h3>${CURVE_NAMES[k]}</h3>
+    <table data-curve="${k}"><tr><th>от, °C</th><th>не выше, МГц</th><th></th></tr>
+    ${(th[k] || []).map(([t, m]) => curveRow(t, m, freqsMHz[k])).join("")}</table>
+    <button data-add="${k}">+ порог</button></div>`).join("");
+  $("th-curves").querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => {
+    const k = b.dataset.add;
+    const tbl = document.querySelector(`table[data-curve=${k}]`);
+    tbl.insertAdjacentHTML("beforeend", curveRow(80, freqsMHz[k][Math.floor(freqsMHz[k].length / 2)] || 600, freqsMHz[k]));
+  }));
+  $("th-curves").onclick = (e) => {
+    if (e.target.dataset.del != null) e.target.closest("tr").remove();
+  };
+  $("th-charging").innerHTML = `<option value="">Не ограничивать</option>` +
+    freqsMHz.big.map((m) => `<option value="${m}" ${m === th.charging_big_mhz ? "selected" : ""}>${m} МГц</option>`).join("");
+}
+
+function curveRow(t, m, freqs) {
+  const opts = [...new Set([...freqs, m])].sort((a, b) => a - b)
+    .map((f) => `<option value="${f}" ${f === m ? "selected" : ""}>${f}</option>`).join("");
+  return `<tr><td><input type="number" min="30" max="100" value="${t}" style="min-width:60px;width:60px"></td>
+    <td><select>${opts}</select></td><td><button data-del>×</button></td></tr>`;
+}
+
+function readThermal() {
+  const out = { enabled: $("th-enabled").checked,
+                charging_big_mhz: Number($("th-charging").value) || null };
+  document.querySelectorAll("table[data-curve]").forEach((tbl) => {
+    out[tbl.dataset.curve] = [...tbl.querySelectorAll("tr")].slice(1).map((tr) =>
+      [Number(tr.querySelector("input").value), Number(tr.querySelector("select").value)]);
+  });
+  return out;
 }
 
 async function loadSettings() {
@@ -579,6 +636,18 @@ $("migrate-targets").addEventListener("change", previewMigrate);
 $("migrate-cancel").addEventListener("click", () => postMigrate({ target: null }, "Перенос отменён"));
 $("migrate-reboot").addEventListener("click", () => {
   if (confirm("Перезагрузить ноутбук сейчас?")) postMigrate({ reboot: true }, "Перезагрузка…");
+});
+
+$("th-save").addEventListener("click", () =>
+  save({ thermal: readThermal() }, () => "Кривая сохранена"));
+$("th-presets").addEventListener("click", (e) => {
+  const p = e.target.dataset.preset;
+  if (p) save({ thermal: { preset: p, enabled: true } }, () => "Применён профиль: " + e.target.textContent);
+});
+$("cr-save").addEventListener("click", () => {
+  const chrome = { gpu_raster: $("cr-raster").checked, zero_copy: $("cr-zero-copy").checked,
+                   video_logging: $("cr-video-log").checked };
+  save({ chrome }, () => "Сохранено. Выйди из сеанса, чтобы Chrome перезапустился с новыми настройками.");
 });
 
 $("keys-save").addEventListener("click", () => {
